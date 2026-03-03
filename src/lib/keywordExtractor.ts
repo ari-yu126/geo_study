@@ -4,8 +4,17 @@ import type { AnalysisMeta, SeedKeyword } from './analysisTypes';
 const STOP_WORDS = new Set([
   '그리고', '하지만', '그러나', '그러면서', '또는', '또한',
   '이것', '저것', '그것', '있는', '하는', '되는', '통해', '대한', '위한', '같은', '많은',
+  '있습니다', '합니다', '됩니다', '입니다', '습니다', '니다',
+  '경우', '사용', '필요', '다른', '모든', '이용', '수행',
   'the', 'is', 'are', 'and', 'or', 'for', 'with', 'this', 'that', 'from', 'into', 'about', 'your', 'our',
-  'has', 'have', 'can', 'will', 'been', 'more', 'when', 'they', 'them', 'their', 'what', 'which'
+  'has', 'have', 'can', 'will', 'been', 'more', 'when', 'they', 'them', 'their', 'what', 'which',
+  'var', 'let', 'const', 'function', 'return', 'true', 'false', 'null', 'undefined',
+  'document', 'window', 'element', 'href', 'src', 'style', 'class', 'type',
+  'location', 'locationhref', 'windowopen', 'innerhtml', 'queryselector',
+  'addeventlistener', 'getelementbyid', 'classname', 'parentnode',
+  'appendchild', 'createelement', 'setattribute', 'getattribute',
+  'foreach', 'indexof', 'substring', 'replace', 'length', 'push',
+  'console', 'log', 'error', 'catch', 'try', 'new', 'prototype',
 ]);
 
 /**
@@ -17,22 +26,22 @@ export function extractSeedKeywords(
   headings: string[],
   contentText: string
 ): SeedKeyword[] {
-  // (1) 데이터 통합
+  // (1) 데이터 통합 — 제목/H1에 3배 가중치로 상품 고유 명사 우선 추출
   const parts: string[] = [];
-  
-  if (meta.title) parts.push(meta.title);
+  const h1 = headings[0] ?? '';
+
+  if (meta.title) for (let i = 0; i < 3; i++) parts.push(meta.title);
   if (meta.ogTitle) parts.push(meta.ogTitle);
   if (meta.description) parts.push(meta.description);
   if (meta.ogDescription) parts.push(meta.ogDescription);
-  
-  // 제목들 추가
-  parts.push(...headings);
-  
-  // 본문 텍스트는 앞부분만 추가 (800자)
+
+  if (h1) for (let i = 0; i < 3; i++) parts.push(h1);
+  parts.push(...headings.slice(1));
+
   if (contentText) {
     parts.push(contentText.substring(0, 800));
   }
-  
+
   const rawText = parts.join(' ');
   
   // 엣지 케이스: 텍스트가 비어있으면 빈 배열 반환
@@ -50,17 +59,17 @@ export function extractSeedKeywords(
   // 공백 기준으로 split
   let tokens = cleaned.split(/\s+/).filter(token => token.length > 0);
   
-  // 조건에 맞지 않는 토큰 제거
   tokens = tokens.filter(token => {
-    // 길이가 1자인 토큰 제거
     if (token.length === 1) return false;
-    
-    // 숫자만으로 이루어진 토큰 제거
     if (/^\d+$/.test(token)) return false;
-    
-    // 너무 긴 토큰 제거 (30자 이상)
     if (token.length >= 30) return false;
-    
+
+    // camelCase 합성어 필터 (영문 소문자 연속 15자 이상이면 코드일 가능성 높음)
+    if (/^[a-z]{15,}$/.test(token)) return false;
+
+    // 영문 2글자 이하 제거 (of, by, to 등 불용어)
+    if (/^[a-z]{1,2}$/.test(token)) return false;
+
     return true;
   });
   

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { normalizeUrl } from '@/lib/htmlAnalyzer';
 import { runAnalysis } from '@/lib/runAnalysis';
 import type { AnalysisResult } from '@/lib/analysisTypes';
-import { supabase } from '@/lib/supabase';
+import { supabase, isSupabaseReachable } from '@/lib/supabase';
 
 // 타입들을 외부에서도 사용할 수 있도록 re-export
 export type { 
@@ -12,7 +12,8 @@ export type {
   QuestionCluster, 
   GeoScores, 
   AnalysisResult,
-  SearchSource 
+  SearchSource,
+  ContentQuality,
 } from '@/lib/analysisTypes';
 
 // TODO: analysis_history 테이블 컬럼명이 다를 경우 이 부분을 실제 스키마에 맞게 조정할 것
@@ -23,7 +24,9 @@ export type {
 async function getCachedAnalysis(
   normalizedUrl: string
 ): Promise<AnalysisResult | null> {
-  // updated_at이 24시간 이내인 레코드만 캐시로 인정
+  const reachable = await isSupabaseReachable();
+  if (!reachable) return null;
+
   const oneDayAgo = new Date();
   oneDayAgo.setDate(oneDayAgo.getDate() - 1);
 
@@ -36,16 +39,9 @@ async function getCachedAnalysis(
     .limit(1)
     .maybeSingle();
 
-  if (error) {
-    console.error('getCachedAnalysis error:', error);
-    return null;
-  }
+  if (error) return null;
+  if (!data || !data.result_json) return null;
 
-  if (!data || !data.result_json) {
-    return null;
-  }
-
-  // result_json은 AnalysisResult 형태라고 가정
   return data.result_json as AnalysisResult;
 }
 
@@ -55,9 +51,12 @@ async function getCachedAnalysis(
  * normalized_url을 기준으로 upsert합니다.
  */
 async function saveAnalysisResult(result: AnalysisResult): Promise<void> {
+  const reachable = await isSupabaseReachable();
+  if (!reachable) return;
+
   const { url, normalizedUrl, scores } = result;
 
-  const { error } = await supabase
+  await supabase
     .from('analysis_history')
     .upsert(
       {
@@ -69,13 +68,9 @@ async function saveAnalysisResult(result: AnalysisResult): Promise<void> {
         updated_at: new Date().toISOString(),
       },
       {
-        onConflict: 'normalized_url', // normalized_url 기준으로 upsert
+        onConflict: 'normalized_url',
       }
     );
-
-  if (error) {
-    console.error('saveAnalysisResult error:', error);
-  }
 }
 
 export async function POST(req: Request) {
@@ -92,21 +87,28 @@ export async function POST(req: Request) {
     const url = body.url as string;
     const normalizedUrl = normalizeUrl(url);
 
-    // 1) 캐시 조회
-    const cached = await getCachedAnalysis(normalizedUrl);
+    const forceRefresh = body.forceRefresh === true;
 
-    if (cached) {
-      return NextResponse.json(
-        { fromCache: true, result: cached },
-        { status: 200 }
-      );
+    if (!forceRefresh) {
+      const cached = await getCachedAnalysis(normalizedUrl);
+      if (cached && cached.scores?.answerabilityScore !== undefined) {
+        return NextResponse.json(
+          { fromCache: true, result: cached },
+          { status: 200 }
+        );
+      }
     }
 
-    // 2) 캐시가 없으면 새로 분석
-    const result = await runAnalysis(url);
+    // 2) 캐시가 없으면 새로 분석 (appOrigin 전달 시 프록시 경유 → iframe과 동일 HTML 사용)
+    const appOrigin = typeof req.url === 'string' ? new URL(req.url).origin : undefined;
+    const result = await runAnalysis(url, { appOrigin });
 
-    // 3) DB에 저장 (에러 나도 분석 결과는 리턴)
-    await saveAnalysisResult(result);
+    // 3) DB에 저장 (실패해도 분석 결과는 반환)
+    try {
+      await saveAnalysisResult(result);
+    } catch (saveErr) {
+      console.warn('Supabase 저장 실패 (분석 결과는 반환):', saveErr);
+    }
 
     return NextResponse.json(
       { fromCache: false, result },
@@ -114,8 +116,12 @@ export async function POST(req: Request) {
     );
   } catch (err: any) {
     console.error('analyze API error:', err);
+    const detail = err?.message ?? String(err);
     return NextResponse.json(
-      { error: '분석 중 오류가 발생했습니다.', detail: String(err?.message ?? err) },
+      {
+        error: '분석 중 오류가 발생했습니다.',
+        detail: process.env.NODE_ENV === 'development' ? detail : undefined,
+      },
       { status: 500 }
     );
   }
