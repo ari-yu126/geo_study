@@ -10,7 +10,7 @@ import { extractChunks, evaluateCitations, citationsToScore } from './citationEv
 import { deriveAuditIssues } from './issueDetector';
 import { generateGeoRecommendations } from './recommendationEngine';
 import { hasDomainAuthority } from './domainAuthority';
-import { checkActualAiCitation } from './actualAiCitation';
+import { checkActualAiCitation, hasActualAiCitationDomain } from './actualAiCitation';
 import { fetchYouTubeMetadata, youtubeMetadataToAnalysisMeta } from './youtubeMetadataExtractor';
 import type {
   AnalysisResult,
@@ -30,6 +30,34 @@ const TOKEN_MATCH_RATIO = 0.5;
 const MIN_INTERSECTION = 3;
 const MIN_INTERSECTION_SHORT = 2;
 const SHORT_QUESTION_TOKEN_THRESHOLD = 4;
+
+/** FAQ 성격 페이지 감지: JSON-LD FAQPage 또는 질문형 헤딩 30% 이상 */
+function detectFaqLikePage(params: {
+  hasFaqSchema: boolean;
+  headings: string[];
+}): boolean {
+  if (params.hasFaqSchema) return true;
+  const questionPatterns = [/\?|Q[.:)]|\bFAQ\b|\b무엇\b|\b어떻게\b|\b왜\b|\b언제\b/i];
+  const questionHeadings = params.headings.filter((h) =>
+    questionPatterns.some((p) => p.test(h))
+  );
+  return questionHeadings.length / Math.max(1, params.headings.length) >= 0.3;
+}
+
+/** Top 8 검색 질문과 본문 토큰 매칭률 — 0~100. 질문 토큰의 50% 이상 포함 시 hit */
+function computeQuestionMatchScore(questions: SearchQuestion[], contentText: string): number {
+  if (!questions?.length || !contentText) return 0;
+  const text = contentText.toLowerCase();
+  const top = questions.slice(0, 8);
+  let hit = 0;
+  for (const q of top) {
+    const tokens = q.text.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
+    const tokenHit =
+      tokens.length ? tokens.filter((t) => text.includes(t)).length / tokens.length : 0;
+    if (tokenHit >= 0.5) hit += 1;
+  }
+  return Math.round((hit / top.length) * 100);
+}
 
 function computeSearchQuestionCoverage(
   pageQuestions: string[],
@@ -214,15 +242,23 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
       ...rawTrustSignals,
       hasDomainAuthority: hasDomainAuth,
       hasSearchExposure,
-      hasActualAiCitation: hasActualAiCitationRes || isYouTube,
+      hasActualAiCitation:
+        hasActualAiCitationRes || hasActualAiCitationDomain(analysisHost) || isYouTube,
     };
     const chunks = extractChunks(html);
 
+    const isFaqLikePage = detectFaqLikePage({ hasFaqSchema, headings });
+
     const [paragraphStats, chunkCitations] = await Promise.all([
       Promise.resolve(analyzeParagraphs(html, headings, searchQuestions)),
-      evaluateCitations(chunks, searchQuestions),
+      evaluateCitations({
+        chunks,
+        searchQuestions,
+        isFaqLikePage,
+        hasActualAiCitation: trustSignals.hasActualAiCitation ?? false,
+      }),
     ]);
-    const paragraphScore = paragraphStatsToScore(paragraphStats);
+    const paragraphScore = paragraphStatsToScore(paragraphStats, { isFaqLikePage });
     let citationScore = citationsToScore(chunkCitations);
 
     const maxChunkScore = chunkCitations.length > 0
@@ -279,6 +315,24 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
       pageQuestions, searchQuestions, effectiveContentText
     );
     const questionCoverageScore = questionCoverage * 100;
+    let questionMatchScore = computeQuestionMatchScore(searchQuestions, effectiveContentText);
+    // searchQuestions 비어 있으면 communityFitScore(0~100)로 폴백
+    if (questionMatchScore === 0 && (paragraphStats.communityFitScore ?? 0) > 0) {
+      questionMatchScore = Math.min(100, paragraphStats.communityFitScore ?? 0);
+    }
+
+    // Step 2: 실제 인용 + FAQ/질문 매칭 시 citationScore Floor (최소 70)
+    const hasActualAiCitation = trustSignals.hasActualAiCitation ?? false;
+    if (
+      (isFaqLikePage || questionMatchScore >= 70) &&
+      hasActualAiCitation &&
+      citationScore >= 0
+    ) {
+      const floorByQuestion = questionMatchScore * 0.8;
+      const minCitation = 70;
+      citationScore = Math.max(citationScore, floorByQuestion, minCitation);
+      citationScore = Math.min(100, citationScore);
+    }
 
     const features: PageFeatures = {
       meta, headings, h1Count, pageQuestions, seedKeywords,
@@ -308,32 +362,77 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
     // 페널티 완화: 블로그/에이스 문단은 구조 감점 70% 할인 (덜 깎는 방식)
     const hasAceChunk = maxChunkScore > 0;
     const mitigateStructure = (isBlog || hasAceChunk) && structureScore < 50;
-    const effectiveStructureScore = mitigateStructure
+    let effectiveStructureScore = mitigateStructure
       ? structureScore + (50 - structureScore) * 0.7  // 감점의 30%만 적용
       : structureScore;
+
+    // Step 3: 실제 인용된 FAQ 페이지는 structureScore 최소 60점 보장
+    if (hasActualAiCitation && isFaqLikePage) {
+      effectiveStructureScore = Math.max(effectiveStructureScore, 60);
+    }
     features.structureScore = effectiveStructureScore;
 
     // 신뢰도 기반 가변 가중치: maxChunkScore가 높을수록 citation 비중 45%→65% 선형 증가
     const hasCitation = citationScore >= 0;
-    const citationWeight = 0.45 + 0.2 * (maxChunkScore / 100);
-    const structureWeight = 0.15 - 0.1 * (maxChunkScore / 100);
-    const trustWeight = 0.15 - 0.1 * (maxChunkScore / 100);
+    let citationWeight = 0.45 + 0.2 * (maxChunkScore / 100);
+    let structureWeight = 0.15 - 0.1 * (maxChunkScore / 100);
+    let trustWeight = 0.15 - 0.1 * (maxChunkScore / 100);
+    let paragraphWeight = 0.05;
+    let questionMatchWeight = 0.05;
+    let answerabilityWeight = 0.15;
+    let questionCoverageWeight = 0.10;
+
+    // Step 3: 실제 인용된 FAQ 페이지 — 구조 비중 감소, 질문/인용 비중 강화
+    if (hasActualAiCitation && isFaqLikePage) {
+      citationWeight = 0.40;
+      paragraphWeight = 0.10;
+      answerabilityWeight = 0.15;
+      structureWeight = 0.05;
+      trustWeight = 0.10;
+      questionMatchWeight = 0.15;
+      questionCoverageWeight = 0.10;
+    } else if (isFaqLikePage || questionMatchScore >= 70) {
+      questionMatchWeight = questionMatchScore >= 80 ? 0.20 : 0.15;
+      structureWeight = Math.max(0.05, structureWeight - 0.05);
+      trustWeight = Math.max(0.05, trustWeight - 0.05);
+      if (questionMatchWeight >= 0.20) paragraphWeight = 0;
+    }
 
     let finalScore: number;
     if (hasCitation || citationScore > 0) {
+      const total =
+        citationWeight + paragraphWeight + answerabilityWeight +
+        structureWeight + trustWeight + questionMatchWeight + questionCoverageWeight;
       finalScore = Math.round(
-        citationScore * citationWeight +
-        paragraphScore * 0.10 +
-        answerabilityScore * 0.15 +
-        effectiveStructureScore * Math.max(0.05, structureWeight) +
-        trustScore * Math.max(0.05, trustWeight)
+        citationScore * (citationWeight / total) +
+        paragraphScore * (paragraphWeight / total) +
+        answerabilityScore * (answerabilityWeight / total) +
+        effectiveStructureScore * (structureWeight / total) +
+        trustScore * (trustWeight / total) +
+        questionMatchScore * (questionMatchWeight / total) + 
+        questionCoverageScore * (questionCoverageWeight / total)
       );
     } else {
+      let wP = 0.30, wA = 0.25, wS = 0.20, wT = 0.20, wQ = 0.05;
+      if (hasActualAiCitation && isFaqLikePage) {
+        wP = 0.25;
+        wA = 0.30;
+        wS = 0.05;
+        wT = 0.10;
+        wQ = 0.30;
+      } else if (isFaqLikePage || questionMatchScore >= 70) {
+        wQ = questionMatchScore >= 80 ? 0.20 : 0.15;
+        wP = 0.20;
+        wS = 0.15;
+        wT = 0.15;
+      }
+      const total = wP + wA + wS + wT + wQ;
       finalScore = Math.round(
-        paragraphScore * 0.35 +
-        answerabilityScore * 0.25 +
-        effectiveStructureScore * 0.20 +
-        trustScore * 0.20
+        paragraphScore * (wP / total) +
+        answerabilityScore * (wA / total) +
+        effectiveStructureScore * (wS / total) +
+        trustScore * (wT / total) +
+        questionMatchScore * (wQ / total)
       );
     }
 
@@ -354,8 +453,23 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
       structureScore: effectiveStructureScore, answerabilityScore, trustScore,
       paragraphScore, citationScore,
       questionCoverage: questionCoverageScore,
+      questionMatchScore,
       finalScore,
     };
+
+    if (process.env.GEO_DEBUG === '1') {
+      console.log('GEO DEBUG (LGESY)', {
+        citationScore,
+        structureScore: effectiveStructureScore,
+        paragraphScore,
+        answerabilityScore,
+        trustScore,
+        questionMatchScore,
+        isFaqLikePage,
+        hasActualAiCitation,
+        finalScore,
+      });
+    }
 
     const searchQuestionCovered = computeSearchQuestionCoverage(
       pageQuestions,

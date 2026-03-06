@@ -369,14 +369,18 @@ export async function GET(req: NextRequest) {
     const contentType = (response.headers.get('content-type') || '').toLowerCase();
     const pathname = parsedUrl.pathname.toLowerCase();
 
-    // HTML이 아닌 리소스(CSS, JS, 이미지 등)는 그대로 전달 (HTML 치환 시 깨짐 방지)
+    // HTML이 아닌 리소스(CSS, JS, 이미지, JSON 등)는 그대로 전달 (HTML 치환 시 깨짐 방지)
     const isNonHtml =
       contentType.includes('text/css') ||
       contentType.includes('application/javascript') ||
+      contentType.includes('application/json') ||
+      contentType.includes('text/json') ||
+      contentType.includes('application/xml') ||
+      contentType.includes('text/xml') ||
       contentType.includes('image/') ||
       contentType.includes('font/') ||
       contentType.includes('application/font') ||
-      /\.(css|js|jpg|jpeg|png|gif|webp|svg|ico|woff2?|ttf|eot)(\?|$)/i.test(pathname);
+      /\.(css|js|json|xml|jpg|jpeg|png|gif|webp|svg|ico|woff2?|ttf|eot)(\?|$)/i.test(pathname);
     if (isNonHtml) {
       const blob = await response.blob();
       return new NextResponse(blob, {

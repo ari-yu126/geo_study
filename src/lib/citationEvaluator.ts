@@ -48,10 +48,16 @@ export function extractChunks(html: string, maxChunks = 15): TextChunk[] {
   return chunks;
 }
 
-export async function evaluateCitations(
-  chunks: TextChunk[],
-  searchQuestions: { text: string }[] = []
-): Promise<ChunkCitation[]> {
+export interface EvaluateCitationsParams {
+  chunks: TextChunk[];
+  searchQuestions: { text: string }[];
+  isFaqLikePage?: boolean;
+  hasActualAiCitation?: boolean;
+}
+
+export async function evaluateCitations(params: EvaluateCitationsParams): Promise<ChunkCitation[]> {
+  const { chunks, searchQuestions, isFaqLikePage = false, hasActualAiCitation = false } = params;
+
   if (!geminiFlash || chunks.length === 0) {
     return [];
   }
@@ -62,9 +68,21 @@ export async function evaluateCitations(
       ? searchQuestions.map(q => q.text).join('\n')
       : '(커뮤니티 질문 데이터 없음)';
 
-  const prompt = `You are an AI search citation evaluator. Evaluate each text chunk by SEMANTIC value, not keyword matching.
+  let systemHint = `You are an AI search citation evaluator. Evaluate each text chunk by SEMANTIC value, not keyword matching.
 
-Key question: "Would this paragraph be a REAL SOLUTION that an AI (Google AI Overview, ChatGPT, Perplexity) would cite to answer user questions?"
+Key question: "Would this paragraph be a REAL SOLUTION that an AI (Google AI Overview, ChatGPT, Perplexity) would cite to answer user questions?"`;
+
+  if (hasActualAiCitation || isFaqLikePage) {
+    systemHint += `
+
+ADDITIONAL CONTEXT:
+- This page is already an actual FAQ source that AI (e.g., ChatGPT, AI Overview) selects as a citation.
+- Prioritize "answer clarity" and "direct answer to the user's question" when scoring.
+- Give higher citation scores to chunks that clearly answer the question, even if they are short.
+- Prioritize question-answer matching over length or rhetorical flair.`;
+  }
+
+  const prompt = `${systemHint}
 
 For each chunk, evaluate:
 
@@ -92,6 +110,7 @@ Format: [{"index":0,"score":7,"community_fit":6,"reason":"..."}]
 JSON:`;
 
   try {
+    console.log('[GEMINI] evaluateCitations call start', { chunkCount: chunks.length });
     const result = await geminiFlash.generateContent([{ text: prompt }]);
     const raw = result.response.text().trim();
     const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();

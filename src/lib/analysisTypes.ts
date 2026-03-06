@@ -35,6 +35,8 @@ export interface GeoScores {
   paragraphScore: number;
   citationScore: number;
   questionCoverage: number;
+  /** 0~100. Top 검색 질문과 본문 매칭률 — finalScore에 5% 반영 */
+  questionMatchScore: number;
   finalScore: number;
 }
 

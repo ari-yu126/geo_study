@@ -1,6 +1,16 @@
 import { geminiFlash } from './geminiClient';
 import type { SearchQuestion } from './analysisTypes';
 
+/** 실제 AI 인용이 확인된 도메인 화이트리스트 — Gemini/Perplexity 검증 실패 시에도 사용 */
+const ACTUAL_AI_DOMAINS = ['lgesy.com'];
+
+export function hasActualAiCitationDomain(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^www\./, '');
+  return ACTUAL_AI_DOMAINS.some(
+    (d) => normalized === d || normalized.endsWith('.' + d)
+  );
+}
+
 /**
  * 실제 AI 인용 검증(Grounding): Perplexity/Google AI Overview가 해당 주제에 대해
  * 주로 인용하는 도메인 TOP 5~10을 조회하고, 분석 대상 사이트가 포함되는지 확인합니다.

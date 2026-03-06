@@ -236,6 +236,7 @@ export function buildYouTubeAnalysisResult(
     paragraphScore,
     citationScore,
     questionCoverage: 75,
+    questionMatchScore: 0,
     finalScore: 0,
   };
 

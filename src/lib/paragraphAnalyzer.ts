@@ -372,16 +372,24 @@ function buildParagraph(text: string): Paragraph {
   return { text, wordCount, isDefinition, isGoodLength, isFluff, isSummary, numberRatio, properNounRatio, infoDensity, score: 0 };
 }
 
-export function paragraphStatsToScore(stats: ParagraphStats): number {
+export function paragraphStatsToScore(
+  stats: ParagraphStats,
+  options?: { isFaqLikePage?: boolean }
+): number {
   if (stats.totalParagraphs === 0) return 0;
+  const isFaqLikePage = options?.isFaqLikePage ?? false;
 
   let score = 0;
 
   // 정의형 문장 비율 (0~25점)
   score += Math.min(25, stats.definitionRatio * 100);
 
-  // 적정 길이 문단 비율 (0~20점)
-  score += Math.min(20, stats.goodLengthRatio * 30);
+  // 적정 길이 문단 비율 (0~20점) — FAQ는 짧은 Q&A가 정상이므로 패널티 완화
+  if (isFaqLikePage) {
+    score += Math.min(20, 10 + stats.goodLengthRatio * 10); // 최소 10점 + 비율
+  } else {
+    score += Math.min(20, stats.goodLengthRatio * 30);
+  }
 
   // 과장 표현 감점 (0~-15점) — infoDensity > 0.5면 감점 50% 무효화 (짧아도 정보 응축)
   const penaltyFactor = (stats.infoDensity ?? 0) > 0.5 ? 0.5 : 1;

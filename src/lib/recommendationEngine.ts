@@ -85,6 +85,9 @@ ${issuesText}
 JSON:`;
 
   try {
+    console.log('[GEMINI] generateGeoRecommendations call start', {
+      uncoveredCount: uncoveredQuestions.length,
+    });
     const result1 = await geminiFlash.generateContent([{ text: prompt1 }]);
     const raw1 = result1.response.text().trim();
     const jsonStr1 = raw1

@@ -68,22 +68,24 @@ export function computeSimulatedScores(
   const simulatedCitation = citationScore >= 0 ? Math.max(citationScore, 85) : citationScore;
   const hasCitation = simulatedCitation >= 0;
 
+  const questionMatchScore = s.questionMatchScore ?? 0;
   let finalScore: number;
   if (hasCitation) {
     finalScore = Math.round(
       simulatedCitation * 0.45 +
-        paragraphScore * 0.10 +
+        paragraphScore * 0.05 +
         answerabilityScore * 0.15 +
         structureScore * 0.15 +
-        trustScore * 0.15
+        trustScore * 0.15 +
+        questionMatchScore * 0.05
     );
   } else {
     finalScore = Math.round(
-      paragraphScore * 0.35 +
+      paragraphScore * 0.30 +
         answerabilityScore * 0.25 +
         structureScore * 0.2 +
-        trustScore * 0.15 +
-        Math.min(questionCoverage, 100) * 0.05
+        trustScore * 0.20 +
+        questionMatchScore * 0.05
     );
   }
 
@@ -96,6 +98,7 @@ export function computeSimulatedScores(
     paragraphScore,
     citationScore: simulatedCitation,
     questionCoverage,
+    questionMatchScore: 100, // Coverage Boost 시나리오: FAQ 추가로 질문 매칭 극대화
     finalScore,
   };
 }
