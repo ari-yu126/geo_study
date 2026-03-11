@@ -10,6 +10,55 @@ export interface YouTubeMetadata {
   videoId: string;
 }
 
+export interface YouTubeOEmbed {
+  title: string;
+  author_name: string;
+  thumbnail_url?: string;
+  html?: string;
+}
+
+/**
+ * YouTube oEmbed API로 최소 메타(title, author_name 등) 조회.
+ * 실패 시 null 반환.
+ */
+export async function fetchYouTubeOEmbed(url: string): Promise<YouTubeOEmbed | null> {
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const res = await fetch(oembedUrl, {
+      headers: { Accept: 'application/json' },
+      redirect: 'follow',
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Record<string, unknown>;
+    const title = typeof data.title === 'string' ? data.title : '';
+    const author_name = typeof data.author_name === 'string' ? data.author_name : '';
+    if (!title && !author_name) return null;
+    return {
+      title: title || 'Untitled',
+      author_name: author_name || 'Unknown',
+      thumbnail_url: typeof data.thumbnail_url === 'string' ? data.thumbnail_url : undefined,
+      html: typeof data.html === 'string' ? data.html : undefined,
+    };
+  } catch (err) {
+    console.warn('fetchYouTubeOEmbed failed:', err);
+    return null;
+  }
+}
+
+/** youtube.com, m.youtube.com, youtu.be, youtube-nocookie.com 등 YouTube 호스트 여부 */
+export function isYouTubeUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    return (
+      host === 'youtube.com' || host.endsWith('.youtube.com') ||
+      host === 'youtu.be' ||
+      host === 'youtube-nocookie.com' || host.endsWith('.youtube-nocookie.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * YouTube watch URL에서 video ID 추출
  */

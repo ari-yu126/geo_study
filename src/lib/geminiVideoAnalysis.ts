@@ -1,7 +1,21 @@
 import { geminiFlash } from './geminiClient';
-import type { AnalysisMeta, AnalysisResult, AuditIssue, GeoScores, SeedKeyword, TrustSignals } from './analysisTypes';
+import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
+import { withGeminiRetry } from './geminiRetry';
+import type { AnalysisMeta, AnalysisResult, AuditIssue, GeoScores, SeedKeyword, TrustSignals, SearchQuestion } from './analysisTypes';
+
+export class VideoAnalysisQuotaSkipError extends Error {
+  retryAfterSec?: number;
+  userMessage?: string;
+  constructor(retryAfterSec?: number) {
+    super('Quota exceeded - video analysis skipped');
+    this.name = 'VideoAnalysisQuotaSkipError';
+    this.retryAfterSec = retryAfterSec;
+  }
+}
 import { normalizeUrl } from './htmlAnalyzer';
 import { computeChunkInfoDensity } from './paragraphAnalyzer';
+import { computeQuestionMatchScore, computeSearchQuestionCoverage } from './questionCoverage';
+import { loadActiveScoringConfig, getProfileForPageType } from './scoringConfigLoader';
 
 /** URL t= 값을 초 단위로 파싱. 120, 1m30s, 1h2m30s 등 */
 function parseTimestampParam(url: string): number | null {
@@ -93,7 +107,22 @@ export async function runGeminiVideoAnalysis(
   url: string,
   meta: AnalysisMeta
 ): Promise<GeminiVideoAnalysisResult | null> {
+  console.log('[GEMINI KEY]', {
+    GOOGLE_GENAI_API_KEY: !!process.env.GOOGLE_GENAI_API_KEY,
+    GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+    NODE_ENV: process.env.NODE_ENV,
+  });
+
+  if (!process.env.GOOGLE_GENAI_API_KEY && !process.env.GEMINI_API_KEY) {
+    console.warn('[GEMINI VIDEO] skipped: missing API key');
+    return null;
+  }
   if (!geminiFlash) return null;
+  if (isLlmCooldown()) {
+    const sec = getCooldownRemainingSec();
+    console.warn('[GEMINI] cooldown active - skip video analysis', { retryAfterSec: sec });
+    throw new VideoAnalysisQuotaSkipError(sec ?? undefined);
+  }
 
   const title = meta.title ?? meta.ogTitle ?? '(제목 없음)';
   const description = meta.description ?? meta.ogDescription ?? '';
@@ -141,8 +170,23 @@ export async function runGeminiVideoAnalysis(
 
 JSON:`;
 
+  const wrap = await withGeminiRetry(
+    () => geminiFlash.generateContent([{ text: prompt }]),
+    { feature: 'videoAnalysis', maxRetries: 3 }
+  );
+
+  if (!wrap.ok) {
+    if (wrap.status === 'skipped_quota') {
+      const err = new VideoAnalysisQuotaSkipError(wrap.retryAfterSec);
+      err.userMessage = wrap.message;
+      throw err;
+    }
+    console.warn('runGeminiVideoAnalysis failed', wrap.message);
+    return null;
+  }
+
   try {
-    const result = await geminiFlash.generateContent([{ text: prompt }]);
+    const result = wrap.data;
     const raw = result.response.text().trim();
     const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/\s*```\s*$/, '').trim();
     const parsed = JSON.parse(jsonStr) as {
@@ -173,6 +217,7 @@ JSON:`;
       successFactor: String(parsed.successFactor ?? '영상의 정보 전달력이 양호합니다.'),
     };
   } catch (err) {
+    if (err instanceof VideoAnalysisQuotaSkipError) throw err;
     console.warn('runGeminiVideoAnalysis failed', err);
     return null;
   }
@@ -180,23 +225,43 @@ JSON:`;
 
 export interface BuildYouTubeOptions {
   hasActualAiCitation: boolean;
+  /** video 전용: questionCoverage/answerability 0 방지용 텍스트 (description + title + channel) */
+  effectiveContentText?: string;
+  usedOEmbed?: boolean;
+  /** Tavily 수집 질문 — video에서도 질문/답변 축 계산용 */
+  searchQuestions?: SearchQuestion[];
+  /** Gemini 실패 시 규칙 기반 citationScore 오버라이드 */
+  fallbackCitationScore?: number;
 }
+
+/** video 프로필 없을 때 사용할 기본 가중치 (GEO 2.0 질문/답변 축 반영) */
+const DEFAULT_VIDEO_WEIGHTS = {
+  citation: 0.35,
+  paragraph: 0.20,
+  answerability: 0.20,
+  structure: 0.12,
+  trust: 0.13,
+  questionCoverage: 0.10,
+  questionMatch: 0.10,
+};
 
 /**
  * Gemini-Only 결과를 AnalysisResult 형식으로 조립합니다.
+ * - questionCoverage / questionMatchScore: options.searchQuestions 기반 computeSearchQuestionCoverage, computeQuestionMatchScore로 계산 (고정값 없음)
+ * - finalScore: profiles.video.weights (없으면 DEFAULT_VIDEO_WEIGHTS) 7축 가중합
  */
-export function buildYouTubeAnalysisResult(
+export async function buildYouTubeAnalysisResult(
   url: string,
   meta: AnalysisMeta,
   geminiResult: GeminiVideoAnalysisResult,
   options: BuildYouTubeOptions
-): Omit<AnalysisResult, 'recommendations'> & { recommendations?: AnalysisResult['recommendations'] } {
+): Promise<Omit<AnalysisResult, 'recommendations'> & { recommendations?: AnalysisResult['recommendations'] }> {
   const seedKeywords: SeedKeyword[] = geminiResult.citationKeywords.slice(0, 10).map((v, i) => ({
     value: v,
     score: 1 - i * 0.1,
   }));
 
-  const { hasActualAiCitation } = options;
+  const { hasActualAiCitation, effectiveContentText, searchQuestions: passedSearchQuestions, fallbackCitationScore } = options;
   const trustSignals: TrustSignals = {
     hasAuthor: false,
     hasPublishDate: false,
@@ -208,16 +273,18 @@ export function buildYouTubeAnalysisResult(
     hasActualAiCitation,
   };
 
-  // 정보성 키워드 비중: 전체 단어 대비 모델명·수치 등 비중 → 0~100점
   const descText = meta.description ?? meta.ogDescription ?? '';
-  const infoDensityRatio = computeChunkInfoDensity(descText);
+  const textForDensity = (effectiveContentText && effectiveContentText.length > 0)
+    ? effectiveContentText
+    : descText;
+  const infoDensityRatio = computeChunkInfoDensity(textForDensity);
   const infoDensityScore = Math.round(infoDensityRatio * 100);
   const answerabilityScore = Math.round(0.5 * 82 + 0.5 * Math.min(100, infoDensityScore + 40));
-  const paragraphScore = Math.round(0.6 * geminiResult.paragraphScore + 0.4 * infoDensityScore);
+  let paragraphScore = Math.round(0.6 * geminiResult.paragraphScore + 0.4 * infoDensityScore);
+  paragraphScore = Math.max(paragraphScore, 45);
 
-  let citationScore = geminiResult.citationScore;
+  let citationScore = fallbackCitationScore ?? geminiResult.citationScore;
 
-  // t= 정밀 답변 가산점: 시점 파라미터가 가리키는 내용이 시드 키워드와 일치할 때만
   const tSeconds = parseTimestampParam(url);
   if (tSeconds != null && tSeconds >= 0) {
     const seedKw = geminiResult.citationKeywords.slice(0, 8).map((k) => k.trim()).filter(Boolean);
@@ -226,26 +293,58 @@ export function buildYouTubeAnalysisResult(
     }
   }
 
-  // hasActualAiCitation일 때만 웹 표준(H1~H3) 감점 무효화 → structureScore 상향
-  const structureScore = hasActualAiCitation ? 85 : 75;
+  let structureScore = hasActualAiCitation ? 85 : 75;
+  structureScore = Math.max(structureScore, 45);
+
+  const pageQuestions = meta.title ? [meta.title] : [];
+  const searchQuestions = passedSearchQuestions ?? [];
+  const contentForCoverage = effectiveContentText ?? descText;
+
+  let questionCoverageScore = 0;
+  let questionMatchScore = 0;
+  let searchQuestionCovered: boolean[] = [];
+
+  if (searchQuestions.length > 0 && contentForCoverage.length > 0) {
+    searchQuestionCovered = computeSearchQuestionCoverage(pageQuestions, searchQuestions, contentForCoverage);
+    questionCoverageScore = Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100);
+    questionMatchScore = computeQuestionMatchScore(searchQuestions, contentForCoverage);
+  }
+
+  const trustScore = hasActualAiCitation ? 88 : 75;
 
   const scores: GeoScores = {
     structureScore,
     answerabilityScore,
-    trustScore: hasActualAiCitation ? 88 : 75,
+    trustScore,
     paragraphScore,
     citationScore,
-    questionCoverage: 75,
-    questionMatchScore: 0,
+    questionCoverage: questionCoverageScore,
+    questionMatchScore,
     finalScore: 0,
   };
 
+  const config = await loadActiveScoringConfig();
+  const videoProfile = getProfileForPageType(config, 'video');
+  const weightSource = videoProfile?.weights ?? DEFAULT_VIDEO_WEIGHTS;
+  const citationW = weightSource.citation ?? 0.35;
+  const paragraphW =
+    videoProfile?.weights && 'density' in videoProfile.weights
+      ? (videoProfile.weights.density ?? 0.20)
+      : (weightSource as { paragraph?: number }).paragraph ?? 0.20;
+  const answerabilityW = weightSource.answerability ?? 0.20;
+  const structureW = weightSource.structure ?? 0.12;
+  const trustW = weightSource.trust ?? 0.13;
+  const coverageW = weightSource.questionCoverage ?? 0.10;
+  const matchW = weightSource.questionMatch ?? 0.10;
+  const totalW = citationW + paragraphW + answerabilityW + structureW + trustW + coverageW + matchW;
   const finalScore = Math.round(
-    citationScore * 0.35 +
-    paragraphScore * 0.20 +
-    answerabilityScore * 0.20 +
-    structureScore * 0.12 +
-    scores.trustScore * 0.13
+    citationScore * (citationW / totalW) +
+    paragraphScore * (paragraphW / totalW) +
+    answerabilityScore * (answerabilityW / totalW) +
+    structureScore * (structureW / totalW) +
+    trustScore * (trustW / totalW) +
+    questionCoverageScore * (coverageW / totalW) +
+    questionMatchScore * (matchW / totalW)
   );
   scores.finalScore = Math.min(100, Math.max(0, finalScore));
 
@@ -313,11 +412,12 @@ export function buildYouTubeAnalysisResult(
     url,
     normalizedUrl: normalizeUrl(url),
     analyzedAt: new Date().toISOString(),
+    pageType: 'video' as const,
     meta,
     seedKeywords,
-    pageQuestions: meta.title ? [meta.title] : [],
-    searchQuestions: [],
-    searchQuestionCovered: [],
+    pageQuestions,
+    searchQuestions,
+    searchQuestionCovered,
     questionClusters: [],
     scores,
     contentQuality: {

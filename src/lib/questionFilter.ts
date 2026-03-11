@@ -1,22 +1,47 @@
 import { geminiFlash } from './geminiClient';
+import { isQuotaError, isLlmCooldown } from './llmError';
 import type { SearchQuestion } from './analysisTypes';
+
+export interface FilterQuestionsOptions {
+  pageType?: 'video' | 'editorial';
+  /** 주제 구문 (있으면 STRICT RELEVANCE 프롬프트 사용) */
+  primaryPhrase?: string;
+}
 
 /**
  * 수집된 질문 중 페이지 주제와 맞는 것만 Gemini로 필터링합니다.
+ * pageType 'video'일 때: snippet 길이 확대, 관대한 판단 유도, 필터 결과 부족 시 상위 topK 유지
  */
 export async function filterQuestionsByPageRelevance(
   questions: SearchQuestion[],
   pageTitle: string | null,
-  pageContentSnippet: string
+  pageContentSnippet: string,
+  options?: FilterQuestionsOptions
 ): Promise<SearchQuestion[]> {
   if (!geminiFlash || !questions.length) return questions;
+  if (isLlmCooldown()) return questions;
 
+  const isVideo = options?.pageType === 'video';
+  const primaryPhrase = options?.primaryPhrase ?? '';
   const title = pageTitle ?? '제목 없음';
-  const snippet = pageContentSnippet.slice(0, 1200);
-  const list = questions.map((q, i) => `${i + 1}. ${q.text}`).join('\n');
+  const snippetLen = isVideo ? 2000 : 1200;
+  const snippet = pageContentSnippet.slice(0, snippetLen);
+  const list = questions.slice(0, 20).map((q, i) => `${i + 1}. ${q.text}`).join('\n');
 
-  const prompt = `다음은 검색/커뮤니티에서 수집한 질문 목록이다.
-아래 페이지 제목과 본문 요약을 보고, 이 페이지 주제와 **직접 관련 있는** 질문 번호만 골라줘.
+  const strictHint = primaryPhrase
+    ? `\n**STRICT RELEVANCE:** Primary topic is [${primaryPhrase}]. Discard anything not directly about this. Software, DB, language learning, education, unrelated certification = 100% reject. Be ruthless.\n`
+    : '';
+  const videoHint = isVideo && !primaryPhrase
+    ? '\n**영상 콘텐츠:** 제목·설명 기반으로 판단해줘. 관련 있으면 관대하게 포함해줘.\n'
+    : '';
+  const prompt = `다음은 검색·커뮤니티에서 수집한 질문 목록이다.
+아래 페이지 제목과 본문 요약을 보고, 이 페이지 주제와 **직접 관련 있는** 질문 번호만 골라줘.${strictHint}${videoHint}
+
+**커뮤니티 컨텍스트:** 톤이 비격식이어도 괜찮다. **핵심 사용자 의도와 사실적 질문**에 집중해줘.
+- 유용한 정보가 있지만 표현이 과한 경우 → 전문적인 질문으로 재구성할 수 있으면 포함, 그렇지 않으면 제외
+- 예: "XX 드라이기 실사용 후기 어때요?" → 포함
+
+**ZERO TOLERANCE (예외 없이 즉시 제외):** 성인(NSFW)·선정적·도박·불법 광고·스팸 관련 질문. 조금이라도 의심되거나 유해한 맥락이 있으면 반드시 제거해줘.
 
 ## 페이지 제목
 ${title}
@@ -46,9 +71,15 @@ ${list}
         filtered.push(questions[idx - 1]);
       }
     }
-    return filtered.length > 0 ? filtered : questions;
+    if (filtered.length > 0) return filtered;
+    if (isVideo && questions.length >= 10) return questions.slice(0, 10);
+    return questions;
   } catch (err) {
-    console.warn('filterQuestionsByPageRelevance failed, using original list', err);
+    if (isQuotaError(err)) {
+      console.warn('[GEMINI] quota exceeded - filterQuestionsByPageRelevance, using original list');
+    } else {
+      console.warn('filterQuestionsByPageRelevance failed, using original list', err);
+    }
     return questions;
   }
 }

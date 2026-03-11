@@ -85,6 +85,16 @@ export interface GeoPredictedQuestion {
   isTopGap?: boolean;
 }
 
+/** LLM(Gemini) 기능별 호출 상태 추적 */
+export type LlmFeature = 'recommendations' | 'citations' | 'videoAnalysis' | 'geoConfigUpdate';
+export interface LlmCallStatus {
+  feature: LlmFeature;
+  status: 'ok' | 'skipped_quota' | 'error';
+  retryAfterSec?: number;
+  /** 사용자 노출 메시지: rate-limit / quota-disabled 구분 */
+  message?: string;
+}
+
 export interface GeoRecommendations {
   trendSummary: string;
   contentGapSummary: string;
@@ -97,12 +107,16 @@ export interface GeoRecommendations {
   predictedQuestions?: GeoPredictedQuestion[];
   /** 그 중에서 본문에 없는 Top3 */
   predictedUncoveredTop3?: GeoPredictedQuestion[];
+  /** 규칙 기반 템플릿 추천(쿼터 제한 시 대체) */
+  isTemplateFallback?: boolean;
 }
 
 export interface AnalysisResult {
   url: string;
   normalizedUrl: string;
   analyzedAt: string;
+  /** 페이지 타입 (editorial/video/commerce) — profiles[pageType] 선택용 */
+  pageType?: PageType;
   meta: AnalysisMeta;
   seedKeywords: SeedKeyword[];
   pageQuestions: string[];
@@ -123,6 +137,8 @@ export interface AnalysisResult {
   auditIssues?: AuditIssue[];
   /** 유튜브 전용: Gemini가 생성한 '잘된 점' 정성 문장 (영상 정보 전달력 등) */
   youtubeSuccessFactor?: string;
+  /** LLM(Gemini) 기능별 호출 상태 — 429 스킵 등 UI 표시용 */
+  llmStatuses?: LlmCallStatus[];
 }
 
 export type AuditPriority = 'high' | 'medium' | 'low';
@@ -220,6 +236,28 @@ export interface GeoScoringConfig {
   issueRules: IssueRule[];
   /** 유튜브 비디오 전용 PassedCheck 기준 — 월별 업데이트 대상 */
   youtubePassedCheckRules?: YouTubePassedCheckRule[];
+
+  /** GEO 2.0: 카테고리별 프로필 (editorial / video / commerce). 있으면 pageType에 따라 선택 */
+  profiles?: Record<PageType, GeoScoringProfile>;
+}
+
+/** 페이지 타입 — runAnalysis에서 pageType 감지 후 profiles[pageType] 선택 */
+export type PageType = 'editorial' | 'video' | 'commerce' | 'default';
+
+/** GEO 2.0 카테고리별 스코어링 프로필 */
+export interface GeoScoringProfile {
+  weights: {
+    citation?: number;
+    questionCoverage?: number;
+    answerability?: number;
+    structure?: number;
+    trust?: number;
+    questionMatch?: number;
+    density?: number;
+  };
+  issueRules: IssueRule[];
+  /** Tavily 질문 수집용 템플릿. {keyword}를 시드 키워드로 치환 */
+  queryTemplates: string[];
 }
 
 export interface ContentQuality {

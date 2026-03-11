@@ -41,11 +41,15 @@ export function computeSimulatedScores(
   const s = result.scores;
 
   // 1. Data Density Boost: dataDenseBlockCount +15 (최대치 근접)
-  const boostedStats = {
-    ...result.paragraphStats,
-    dataDenseBlockCount: Math.min(17, (result.paragraphStats.dataDenseBlockCount ?? 0) + 15),
-  };
-  const paragraphScore = paragraphStatsToScore(boostedStats);
+  // 유튜브 등 totalParagraphs=0인 경우 paragraphStatsToScore가 0을 반환하므로, 원점수 유지
+  const stats = result.paragraphStats;
+  const hasParagraphs = (stats?.totalParagraphs ?? 0) > 0;
+  const boostedStats = hasParagraphs && stats
+    ? { ...stats, dataDenseBlockCount: Math.min(17, (stats.dataDenseBlockCount ?? 0) + 15) }
+    : stats;
+  const paragraphScore = hasParagraphs && boostedStats
+    ? paragraphStatsToScore(boostedStats)
+    : (s.paragraphScore ?? 0);
 
   // 2. Coverage Boost: questionCoverage 100%, answerability 만점 수준(90점)
   const questionCoverage = 100;

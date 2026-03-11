@@ -1,10 +1,14 @@
 import { geminiFlash } from './geminiClient';
+import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
+import { withGeminiRetry } from './geminiRetry';
 import type {
   SearchQuestion,
   AuditIssue,
   GeoRecommendations,
   GeoPredictedQuestion,
 } from './analysisTypes';
+
+export type GeoRecommendationsResult = GeoRecommendations | null | { error: 'quota_exceeded'; retryAfterSec?: number; message?: string };
 
 function parsePredictedQuestions(raw: unknown): GeoPredictedQuestion[] | undefined {
   if (!Array.isArray(raw)) return undefined;
@@ -30,10 +34,15 @@ export async function generateGeoRecommendations(
     searchQuestions?: SearchQuestion[];
     pageQuestions?: string[];
   }
-): Promise<GeoRecommendations | null> {
+): Promise<GeoRecommendationsResult> {
   if (!geminiFlash) {
     console.error('Gemini client not available (GEMINI_API_KEY or GOOGLE_GENAI_API_KEY required)');
     return null;
+  }
+  if (isLlmCooldown()) {
+    const sec = getCooldownRemainingSec();
+    console.warn('[GEMINI] cooldown active - skip recommendations', { retryAfterSec: sec });
+    return { error: 'quota_exceeded', retryAfterSec: sec ?? undefined };
   }
 
   const searchQuestions = options?.searchQuestions ?? [];
@@ -88,7 +97,18 @@ JSON:`;
     console.log('[GEMINI] generateGeoRecommendations call start', {
       uncoveredCount: uncoveredQuestions.length,
     });
-    const result1 = await geminiFlash.generateContent([{ text: prompt1 }]);
+    const result1Wrap = await withGeminiRetry(
+      () => geminiFlash.generateContent([{ text: prompt1 }]),
+      { feature: 'recommendations', maxRetries: 3 }
+    );
+    if (!result1Wrap.ok) {
+      if (result1Wrap.status === 'skipped_quota') {
+        return { error: 'quota_exceeded', retryAfterSec: result1Wrap.retryAfterSec, message: result1Wrap.message };
+      }
+      console.error('generateGeoRecommendations error:', result1Wrap.message);
+      return null;
+    }
+    const result1 = result1Wrap.data;
     const raw1 = result1.response.text().trim();
     const jsonStr1 = raw1
       .replace(/^```json?\s*/i, '')
@@ -154,25 +174,33 @@ predictedUncoveredTop3: predictedQuestions 중 coveredByPage가 false인 것 중
 JSON:`;
 
     try {
-      const result2 = await geminiFlash.generateContent([{ text: prompt2 }]);
-      const raw2 = result2.response.text().trim();
-      const jsonStr2 = raw2
-        .replace(/^```json?\s*/i, '')
-        .replace(/\s*```\s*$/, '')
-        .trim();
-      const parsed2 = JSON.parse(jsonStr2) as {
-        predictedQuestions?: unknown;
-        predictedUncoveredTop3?: unknown;
-      };
+      const result2Wrap = await withGeminiRetry(
+        () => geminiFlash.generateContent([{ text: prompt2 }]),
+        { feature: 'recommendations', maxRetries: 2 }
+      );
+      if (!result2Wrap.ok) {
+        console.warn('generateGeoRecommendations: prompt2 skipped, using base recommendations');
+      } else {
+        const result2 = result2Wrap.data;
+        const raw2 = result2.response.text().trim();
+        const jsonStr2 = raw2
+          .replace(/^```json?\s*/i, '')
+          .replace(/\s*```\s*$/, '')
+          .trim();
+        const parsed2 = JSON.parse(jsonStr2) as {
+          predictedQuestions?: unknown;
+          predictedUncoveredTop3?: unknown;
+        };
 
-      const pq = parsePredictedQuestions(parsed2.predictedQuestions);
-      const top3 = parsePredictedQuestions(parsed2.predictedUncoveredTop3);
+        const pq = parsePredictedQuestions(parsed2.predictedQuestions);
+        const top3 = parsePredictedQuestions(parsed2.predictedUncoveredTop3);
 
-      if (pq && pq.length > 0) {
-        recommendations.predictedQuestions = pq.slice(0, 5);
-      }
-      if (top3 && top3.length > 0) {
-        recommendations.predictedUncoveredTop3 = top3.slice(0, 3);
+        if (pq && pq.length > 0) {
+          recommendations.predictedQuestions = pq.slice(0, 5);
+        }
+        if (top3 && top3.length > 0) {
+          recommendations.predictedUncoveredTop3 = top3.slice(0, 3);
+        }
       }
     } catch (parseErr) {
       console.warn('generateGeoRecommendations: predictedQuestions/Top3 parse failed', parseErr);

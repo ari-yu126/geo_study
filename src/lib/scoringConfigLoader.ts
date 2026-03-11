@@ -1,6 +1,16 @@
 import { supabase, isSupabaseReachable } from './supabase';
 import { DEFAULT_SCORING_CONFIG } from './defaultScoringConfig';
-import type { GeoScoringConfig } from './analysisTypes';
+import type { GeoScoringConfig, GeoScoringProfile, PageType } from './analysisTypes';
+
+/** pageType에 따라 활성 프로필 반환. profiles 없으면 null */
+export function getProfileForPageType(
+  config: GeoScoringConfig,
+  pageType: PageType
+): GeoScoringProfile | null {
+  const profiles = config.profiles;
+  if (!profiles) return null;
+  return profiles[pageType] ?? profiles.default ?? null;
+}
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 

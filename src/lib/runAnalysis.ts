@@ -1,35 +1,33 @@
 import { fetchHtml, extractMetaAndContent, normalizeUrl } from './htmlAnalyzer';
-import { runGeminiVideoAnalysis, buildYouTubeAnalysisResult } from './geminiVideoAnalysis';
+import { runGeminiVideoAnalysis, buildYouTubeAnalysisResult, VideoAnalysisQuotaSkipError, type GeminiVideoAnalysisResult } from './geminiVideoAnalysis';
+import { estimateVideoCitationScore, estimateEditorialCitationScore } from './videoScoreFallback';
 import { extractSeedKeywords } from './keywordExtractor';
-import { fetchSearchQuestions } from './searchQuestions';
+import { fetchSearchQuestions, derivePrimaryTopic } from './searchQuestions';
 import { filterQuestionsByPageRelevance } from './questionFilter';
 import { loadActiveScoringConfig } from './scoringConfigLoader';
 import { evaluateCheck } from './checkEvaluator';
 import { analyzeParagraphs, paragraphStatsToScore } from './paragraphAnalyzer';
-import { extractChunks, evaluateCitations, citationsToScore } from './citationEvaluator';
+import { extractChunks, evaluateCitations, citationsToScore, CitationQuotaSkipError } from './citationEvaluator';
 import { deriveAuditIssues } from './issueDetector';
 import { generateGeoRecommendations } from './recommendationEngine';
+import { generateTemplateRecommendations } from './recommendationFallback';
 import { hasDomainAuthority } from './domainAuthority';
 import { checkActualAiCitation, hasActualAiCitationDomain } from './actualAiCitation';
-import { fetchYouTubeMetadata, youtubeMetadataToAnalysisMeta } from './youtubeMetadataExtractor';
+import { fetchYouTubeMetadata, fetchYouTubeOEmbed, isYouTubeUrl, youtubeMetadataToAnalysisMeta } from './youtubeMetadataExtractor';
+import {
+  computeQuestionMatchScore,
+  computeSearchQuestionCoverage,
+} from './questionCoverage';
 import type {
   AnalysisResult,
   GeoScores,
   PageFeatures,
   AnalysisMeta,
   SearchQuestion,
-  ContentQuality,
-  TrustSignals,
-  ParagraphStats,
   ScoringRule,
+  PageType,
+  LlmCallStatus,
 } from './analysisTypes';
-
-/** 본문/질문 토큰 매칭 비율 — 50%: 질문의 과반 핵심어가 문서에 등장해야 답변 완료 인정 */
-const TOKEN_MATCH_RATIO = 0.5;
-/** H2 등과 교집합 최소 토큰 수 (짧은 질문(4토큰 이하)은 2토큰 허용) */
-const MIN_INTERSECTION = 3;
-const MIN_INTERSECTION_SHORT = 2;
-const SHORT_QUESTION_TOKEN_THRESHOLD = 4;
 
 /** FAQ 성격 페이지 감지: JSON-LD FAQPage 또는 질문형 헤딩 30% 이상 */
 function detectFaqLikePage(params: {
@@ -44,76 +42,6 @@ function detectFaqLikePage(params: {
   return questionHeadings.length / Math.max(1, params.headings.length) >= 0.3;
 }
 
-/** Top 8 검색 질문과 본문 토큰 매칭률 — 0~100. 질문 토큰의 50% 이상 포함 시 hit */
-function computeQuestionMatchScore(questions: SearchQuestion[], contentText: string): number {
-  if (!questions?.length || !contentText) return 0;
-  const text = contentText.toLowerCase();
-  const top = questions.slice(0, 8);
-  let hit = 0;
-  for (const q of top) {
-    const tokens = q.text.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
-    const tokenHit =
-      tokens.length ? tokens.filter((t) => text.includes(t)).length / tokens.length : 0;
-    if (tokenHit >= 0.5) hit += 1;
-  }
-  return Math.round((hit / top.length) * 100);
-}
-
-function computeSearchQuestionCoverage(
-  pageQuestions: string[],
-  searchQuestions: SearchQuestion[],
-  contentText: string
-): boolean[] {
-  if (!searchQuestions || searchQuestions.length === 0) return [];
-
-  const questionText = pageQuestions.join(' ').toLowerCase();
-  const fullText = contentText.toLowerCase();
-  const covered: boolean[] = [];
-
-  for (const searchQ of searchQuestions) {
-    const searchTokens = searchQ.text.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
-    if (searchTokens.length === 0) {
-      covered.push(false);
-      continue;
-    }
-
-    const minMatch = Math.max(1, Math.ceil(searchTokens.length * TOKEN_MATCH_RATIO));
-
-    let fullTextMatches = 0;
-    for (const token of searchTokens) {
-      if (fullText.includes(token)) fullTextMatches++;
-    }
-    if (fullTextMatches >= minMatch) {
-      covered.push(true);
-      continue;
-    }
-
-    let questionMatches = 0;
-    for (const token of searchTokens) {
-      if (questionText.includes(token)) questionMatches++;
-    }
-    if (questionMatches >= minMatch) {
-      covered.push(true);
-      continue;
-    }
-
-    const minIntersection =
-      searchTokens.length <= SHORT_QUESTION_TOKEN_THRESHOLD ? MIN_INTERSECTION_SHORT : MIN_INTERSECTION;
-    let coveredByPageQ = false;
-    for (const pageQ of pageQuestions) {
-      const pageTokens = pageQ.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
-      const intersection = searchTokens.filter((t) => pageTokens.includes(t));
-      if (intersection.length >= minIntersection) {
-        coveredByPageQ = true;
-        break;
-      }
-    }
-    covered.push(coveredByPageQ);
-  }
-
-  return covered;
-}
-
 function findUncoveredQuestions(
   pageQuestions: string[],
   searchQuestions: SearchQuestion[],
@@ -123,33 +51,34 @@ function findUncoveredQuestions(
   return searchQuestions.filter((_, i) => !covered[i]);
 }
 
-const DEFAULT_PARAGRAPH_STATS: ParagraphStats = {
-  totalParagraphs: 0, definitionRatio: 0, goodLengthRatio: 0,
-  fluffRatio: 0, duplicateRatio: 0, questionH2Ratio: 0,
-  earlySummaryExists: false, summaryParagraphCount: 0, hasHighValueContext: false,
-  avgScore: 0, communityFitScore: 0, infoDensity: 0,
-  dataDenseBlockCount: 0,
-};
-
 export interface RunAnalysisOptions {
   appOrigin?: string;
 }
 
-function isYouTubeUrl(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
-    return /youtube\.com$/i.test(host);
-  } catch {
-    return false;
-  }
+/** 페이지 타입 감지 — profiles[pageType] 선택용 */
+function detectPageType(url: string, hasProductSchema: boolean): PageType {
+  if (isYouTubeUrl(url)) return 'video';
+  const host = (() => {
+    try {
+      return new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    } catch {
+      return '';
+    }
+  })();
+  const commerceDomains = ['coupang.com', 'amazon.', 'gmarket.co.kr', '11st.co.kr', 'auction.co.kr', 'danawa.com'];
+  if (commerceDomains.some((d) => host.includes(d)) || hasProductSchema) return 'commerce';
+  return 'editorial';
 }
 
 export async function runAnalysis(url: string, options?: RunAnalysisOptions): Promise<AnalysisResult> {
   try {
     const appOrigin = options?.appOrigin ?? process.env.GEO_ANALYZER_BASE_URL;
+    const llmStatuses: LlmCallStatus[] = [];
 
-    // 유튜브 전용: CSR로 제목·설명이 안 불러와지므로 전용 메타 추출 사용 (프록시/HTML body 우회)
+    // 유튜브 전용: ytInitialData/og → 필요 시 oEmbed fallback → effectiveContentText로 questionCoverage/answerability 0 방지
     if (isYouTubeUrl(url)) {
+      console.log('[VIDEO] branch entered', { url });
+      const VIDEO_DESC_PLACEHOLDER = 'No description available.';
       let meta: AnalysisMeta;
       const ytMeta = await fetchYouTubeMetadata(url);
       if (ytMeta?.title || ytMeta?.description) {
@@ -160,30 +89,253 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
         meta = extracted.meta;
       }
 
-      const geminiResult = await runGeminiVideoAnalysis(url, meta);
+      const contentFromMeta = (meta.description ?? meta.ogDescription ?? '').trim();
+      const titleFromMeta = (meta.title ?? meta.ogTitle ?? '').trim();
+      const needsOEmbedFallback =
+        !titleFromMeta ||
+        contentFromMeta.length < 20 ||
+        /^[\s\-–—]*YouTube\s*$/i.test(titleFromMeta);
+
+      let oembed: Awaited<ReturnType<typeof fetchYouTubeOEmbed>> | null = null;
+      if (needsOEmbedFallback) {
+        oembed = await fetchYouTubeOEmbed(url);
+        if (oembed) {
+          const cleanTitle = oembed.title?.replace(/\s*-\s*YouTube\s*$/, '').trim() || oembed.title;
+          meta = { ...meta, title: meta.title || cleanTitle, ogTitle: meta.ogTitle || cleanTitle };
+        }
+      }
+      const usedOEmbed = !!oembed;
+
+      const rawTitle = meta.title ?? meta.ogTitle ?? '';
+      const titleForText = (rawTitle && rawTitle.trim() && !/^[\s\-–—]*YouTube\s*$/i.test(rawTitle))
+        ? rawTitle.trim()
+        : (oembed?.title ?? 'YouTube Video');
+      const authorForText = oembed?.author_name ?? '';
+      const descriptionForText = (ytMeta?.description ?? meta.description ?? meta.ogDescription ?? '').trim() || VIDEO_DESC_PLACEHOLDER;
+      const effectiveContentText = `${descriptionForText}\n${titleForText}\n${authorForText}`.trim();
+    
+      // 3) Gemini video analysis
+      let geminiResult: Awaited<ReturnType<typeof runGeminiVideoAnalysis>> = null;
+      try {
+        geminiResult = await runGeminiVideoAnalysis(url, meta);
+      } catch (e) {
+        if (e instanceof VideoAnalysisQuotaSkipError) {
+          llmStatuses.push({
+            feature: 'videoAnalysis',
+            status: 'skipped_quota',
+            retryAfterSec: e.retryAfterSec,
+            message: e.userMessage ?? '요청이 많아 잠시 후 다시 시도해주세요.',
+          });
+        } else {
+          throw e;
+        }
+      }
+      if (!geminiResult) {
+        console.log('[VIDEO] geminiResult is null — Gemini video analysis failed/skipped');
+      }
+
+      const effectiveContent = geminiResult
+        ? (() => {
+            const summaryLines = [geminiResult.coreTopic, geminiResult.successFactor].filter(Boolean);
+            return summaryLines.length
+              ? `${effectiveContentText}\n\n${summaryLines.join('\n')}`
+              : effectiveContentText;
+          })()
+        : effectiveContentText;
+
       if (geminiResult) {
+        const enhancedContentText = effectiveContent;
+
+        // 4) Tavily 질문 수집 (video profile)
+        const seedKeywords = extractSeedKeywords(meta, [], enhancedContentText);
+
+        const rawSearchQuestions = await fetchSearchQuestions(seedKeywords, {
+          pageType: 'video',
+          meta: { title: meta.title, ogTitle: meta.ogTitle },
+          url,
+        });
+        const topic = derivePrimaryTopic({ title: meta.title, ogTitle: meta.ogTitle }, url, seedKeywords);
+        let searchQuestions = await filterQuestionsByPageRelevance(
+          rawSearchQuestions,
+          meta.title ?? null,
+          enhancedContentText.slice(0, 2000),
+          { pageType: 'video', primaryPhrase: topic.primaryPhrase }
+        );
+        if (!searchQuestions.length) searchQuestions = rawSearchQuestions.slice(0, 10);
+
+        const pageQuestions = meta.title ? [meta.title] : [];
+        const top10 = searchQuestions.slice(0, 10);
+        const uncoveredQuestions = findUncoveredQuestions(pageQuestions, top10, enhancedContentText);
+
+        console.log('[VIDEO Q]', {
+          raw: rawSearchQuestions.length,
+          filtered: searchQuestions.length,
+          sample: searchQuestions.slice(0, 3).map((q) => q.text.slice(0, 60)),
+        });
+    
+        // 5) actual citation 체크
         const syntheticQuestions: SearchQuestion[] = geminiResult.citationKeywords
           .slice(0, 5)
           .map((text) => ({ source: 'google' as const, text }));
+    
         const hasActualAiCitation = await checkActualAiCitation(
           'youtube.com',
           syntheticQuestions,
           meta.title
         );
-        const coreResult = buildYouTubeAnalysisResult(url, meta, geminiResult, {
+    
+        // 6) YouTube 분석 결과 생성 (searchQuestions/enhancedContentText 전달)
+        const coreResult = await buildYouTubeAnalysisResult(url, meta, geminiResult, {
           hasActualAiCitation,
+          usedOEmbed,
+          effectiveContentText: enhancedContentText,
+          searchQuestions,
         });
+    
+        console.log('[VIDEO CHECK]', {
+          usedOEmbed: !!oembed,
+          enhancedContentTextLength: enhancedContentText.length,
+          searchQuestionsLen: coreResult.searchQuestions?.length ?? 0,
+          coveredTrue: coreResult.searchQuestionCovered?.filter(Boolean).length ?? 0,
+          questionCoverage: coreResult.scores.questionCoverage,
+          questionMatchScore: coreResult.scores.questionMatchScore,
+          finalScore: coreResult.scores.finalScore,
+        });
+    
         const { issues } = await deriveAuditIssues(coreResult);
-        const recommendations = await generateGeoRecommendations(
-          [],
+    
+        const recResult = await generateGeoRecommendations(
+          uncoveredQuestions,
           issues,
-          { searchQuestions: [], pageQuestions: coreResult.pageQuestions }
+          { searchQuestions: coreResult.searchQuestions, pageQuestions: coreResult.pageQuestions }
         );
+        let recommendations: AnalysisResult['recommendations'];
+        if (recResult && typeof recResult === 'object' && 'error' in recResult && recResult.error === 'quota_exceeded') {
+          llmStatuses.push({
+            feature: 'recommendations',
+            status: 'skipped_quota',
+            retryAfterSec: recResult.retryAfterSec,
+            message: recResult.message ?? '요청이 많아 잠시 후 다시 시도해주세요.',
+          });
+          recommendations = generateTemplateRecommendations({
+            pageType: 'video',
+            uncoveredQuestions,
+            issues,
+            seedKeywords: coreResult.seedKeywords,
+            metaTitle: meta.title ?? null,
+          });
+        } else if (recResult && !('error' in recResult)) {
+          llmStatuses.push({ feature: 'recommendations', status: 'ok' });
+          recommendations = recResult;
+        } else {
+          recommendations = generateTemplateRecommendations({
+            pageType: 'video',
+            uncoveredQuestions,
+            issues,
+            seedKeywords: coreResult.seedKeywords,
+            metaTitle: meta.title ?? null,
+          });
+        }
+    
         return {
           ...coreResult,
-          recommendations: recommendations ?? undefined,
+          recommendations,
+          llmStatuses: llmStatuses.length > 0 ? llmStatuses : undefined,
         };
       }
+
+      // geminiResult == null: 규칙 기반 fallback citation으로 video 결과 생성
+      const seedKeywords = extractSeedKeywords(meta, [], effectiveContent);
+      const rawSearchQuestions = await fetchSearchQuestions(seedKeywords, {
+        pageType: 'video',
+        meta: { title: meta.title, ogTitle: meta.ogTitle },
+        url,
+      });
+      let searchQuestions = await filterQuestionsByPageRelevance(
+        rawSearchQuestions,
+        meta.title ?? null,
+        effectiveContent.slice(0, 2000),
+        { pageType: 'video' }
+      );
+      if (!searchQuestions.length) searchQuestions = rawSearchQuestions.slice(0, 10);
+      const pageQuestions = meta.title ? [meta.title] : [];
+      const searchQuestionCovered = computeSearchQuestionCoverage(pageQuestions, searchQuestions, effectiveContent);
+      const questionCoverageScore = searchQuestions.length > 0
+        ? Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100)
+        : 0;
+      const questionMatchScore = computeQuestionMatchScore(searchQuestions, effectiveContent);
+      const hasSearchExposure = searchQuestions.some((q) => {
+        if (!q.url) return false;
+        try {
+          const h = new URL(q.url).hostname.toLowerCase();
+          return h.includes('youtube.com');
+        } catch { return false; }
+      });
+      const fallbackCitationScore = estimateVideoCitationScore({
+        questionCoverageScore,
+        questionMatchScore,
+        enhancedContentTextLength: effectiveContent.length,
+        hasActualAiCitation: false,
+        hasSearchExposure,
+      });
+      const syntheticGemini: GeminiVideoAnalysisResult = {
+        citationScore: fallbackCitationScore,
+        paragraphScore: 50,
+        scarcityScore: 50,
+        expertiseScore: 50,
+        substantiveDataScore: 50,
+        citationKeywords: [],
+        coreTopic: '',
+        youtubeIssues: [],
+        successFactor: '',
+      };
+      const coreResult = await buildYouTubeAnalysisResult(url, meta, syntheticGemini, {
+        hasActualAiCitation: false,
+        usedOEmbed,
+        effectiveContentText: effectiveContent,
+        searchQuestions,
+        fallbackCitationScore,
+      });
+      const { issues } = await deriveAuditIssues(coreResult);
+      const top10 = searchQuestions.slice(0, 10);
+      const uncoveredQuestions = findUncoveredQuestions(pageQuestions, top10, effectiveContent);
+      const recResult = await generateGeoRecommendations(
+        uncoveredQuestions,
+        issues,
+        { searchQuestions: coreResult.searchQuestions, pageQuestions: coreResult.pageQuestions }
+      );
+      let recommendations: AnalysisResult['recommendations'];
+      if (recResult && typeof recResult === 'object' && 'error' in recResult && recResult.error === 'quota_exceeded') {
+        llmStatuses.push({
+          feature: 'recommendations',
+          status: 'skipped_quota',
+          retryAfterSec: recResult.retryAfterSec,
+          message: recResult.message ?? '요청이 많아 잠시 후 다시 시도해주세요.',
+        });
+        recommendations = generateTemplateRecommendations({
+          pageType: 'video',
+          uncoveredQuestions,
+          issues,
+          seedKeywords: coreResult.seedKeywords,
+          metaTitle: meta.title ?? null,
+        });
+      } else if (recResult && !('error' in recResult)) {
+        llmStatuses.push({ feature: 'recommendations', status: 'ok' });
+        recommendations = recResult;
+      } else {
+        recommendations = generateTemplateRecommendations({
+          pageType: 'video',
+          uncoveredQuestions,
+          issues,
+          seedKeywords: coreResult.seedKeywords,
+          metaTitle: meta.title ?? null,
+        });
+      }
+      return {
+        ...coreResult,
+        recommendations,
+        llmStatuses: llmStatuses.length > 0 ? llmStatuses : undefined,
+      };
     }
 
     const html = await fetchHtml(url, appOrigin);
@@ -201,7 +353,7 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
         return '';
       }
     })();
-    const isYouTube = /youtube\.com$/i.test(analysisHostFromUrl);
+    const isYouTube = isYouTubeUrl(url);
     const contentForAnalysis = isYouTube
       ? [meta.title, meta.description].filter(Boolean).join(' ')
       : contentText;
@@ -212,7 +364,10 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
       contentForAnalysis
     );
 
-    let searchQuestions = await fetchSearchQuestions(seedKeywords);
+    let searchQuestions = await fetchSearchQuestions(seedKeywords, {
+      meta: { title: meta.title, ogTitle: meta.ogTitle },
+      url,
+    });
     searchQuestions = await filterQuestionsByPageRelevance(
       searchQuestions,
       meta.title,
@@ -249,17 +404,51 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
 
     const isFaqLikePage = detectFaqLikePage({ hasFaqSchema, headings });
 
-    const [paragraphStats, chunkCitations] = await Promise.all([
-      Promise.resolve(analyzeParagraphs(html, headings, searchQuestions)),
-      evaluateCitations({
-        chunks,
-        searchQuestions,
-        isFaqLikePage,
-        hasActualAiCitation: trustSignals.hasActualAiCitation ?? false,
-      }),
-    ]);
+    let paragraphStats: Awaited<ReturnType<typeof analyzeParagraphs>>;
+    let chunkCitations: Awaited<ReturnType<typeof evaluateCitations>>;
+    try {
+      const [ps, cc] = await Promise.all([
+        analyzeParagraphs(html, headings, searchQuestions),
+        evaluateCitations({
+          chunks,
+          searchQuestions,
+          isFaqLikePage,
+          hasActualAiCitation: trustSignals.hasActualAiCitation ?? false,
+        }),
+      ]);
+      paragraphStats = ps;
+      chunkCitations = cc;
+      llmStatuses.push({ feature: 'citations', status: 'ok' });
+    } catch (e) {
+      if (e instanceof CitationQuotaSkipError) {
+        const [ps] = await Promise.all([analyzeParagraphs(html, headings, searchQuestions)]);
+        paragraphStats = ps;
+        chunkCitations = [];
+        llmStatuses.push({
+          feature: 'citations',
+          status: 'skipped_quota',
+          retryAfterSec: e.retryAfterSec,
+          message: e.userMessage ?? '요청이 많아 잠시 후 다시 시도해주세요.',
+        });
+      } else {
+        throw e;
+      }
+    }
     const paragraphScore = paragraphStatsToScore(paragraphStats, { isFaqLikePage });
     let citationScore = citationsToScore(chunkCitations);
+    if (citationScore < 0 && chunkCitations.length === 0 && llmStatuses.some((s) => s.feature === 'citations' && s.status === 'skipped_quota')) {
+      const covered = computeSearchQuestionCoverage(pageQuestions, searchQuestions, contentForAnalysis);
+      const qCoverage = searchQuestions.length > 0
+        ? Math.round((covered.filter(Boolean).length / searchQuestions.length) * 100)
+        : 0;
+      const qMatch = computeQuestionMatchScore(searchQuestions, contentForAnalysis);
+      citationScore = estimateEditorialCitationScore({
+        questionCoverageScore: qCoverage,
+        questionMatchScore: qMatch,
+        contentLength: contentForAnalysis.length,
+        hasActualAiCitation: trustSignals.hasActualAiCitation ?? false,
+      });
+    }
 
     const maxChunkScore = chunkCitations.length > 0
       ? Math.max(...chunkCitations.map((c) => c.score * 10))
@@ -311,10 +500,13 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
     // 유튜브: 본문 대신 페이지 제목·설명을 핵심 분석 대상으로 사용
     const effectiveContentText = contentForAnalysis;
 
-    const { questionCoverage } = calculateQuestionCoverage(
+    const searchQuestionCovered = computeSearchQuestionCoverage(
       pageQuestions, searchQuestions, effectiveContentText
     );
-    const questionCoverageScore = questionCoverage * 100;
+    const questionCoverageScore =
+      searchQuestions.length > 0
+        ? Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100)
+        : 0;
     let questionMatchScore = computeQuestionMatchScore(searchQuestions, effectiveContentText);
     // searchQuestions 비어 있으면 communityFitScore(0~100)로 폴백
     if (questionMatchScore === 0 && (paragraphStats.communityFitScore ?? 0) > 0) {
@@ -471,16 +663,13 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
       });
     }
 
-    const searchQuestionCovered = computeSearchQuestionCoverage(
-      pageQuestions,
-      searchQuestions,
-      effectiveContentText
-    );
+    const pageType = detectPageType(url, hasProductSchema ?? false);
 
     const coreResult: AnalysisResult = {
       url,
       normalizedUrl: normalizeUrl(url),
       analyzedAt: new Date().toISOString(),
+      pageType,
       meta,
       seedKeywords,
       pageQuestions,
@@ -504,14 +693,42 @@ export async function runAnalysis(url: string, options?: RunAnalysisOptions): Pr
       searchQuestions,
       effectiveContentText
     );
-    const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
+    const recResult = await generateGeoRecommendations(uncoveredQuestions, issues, {
       searchQuestions,
       pageQuestions,
     });
+    let recommendations: AnalysisResult['recommendations'];
+    if (recResult && typeof recResult === 'object' && 'error' in recResult && recResult.error === 'quota_exceeded') {
+      llmStatuses.push({
+        feature: 'recommendations',
+        status: 'skipped_quota',
+        retryAfterSec: recResult.retryAfterSec,
+        message: recResult.message ?? '요청이 많아 잠시 후 다시 시도해주세요.',
+      });
+      recommendations = generateTemplateRecommendations({
+        pageType,
+        uncoveredQuestions,
+        issues,
+        seedKeywords: coreResult.seedKeywords,
+        metaTitle: meta.title ?? null,
+      });
+    } else if (recResult && !('error' in recResult)) {
+      llmStatuses.push({ feature: 'recommendations', status: 'ok' });
+      recommendations = recResult;
+    } else {
+      recommendations = generateTemplateRecommendations({
+        pageType,
+        uncoveredQuestions,
+        issues,
+        seedKeywords: coreResult.seedKeywords,
+        metaTitle: meta.title ?? null,
+      });
+    }
 
     return {
       ...coreResult,
-      recommendations: recommendations ?? undefined,
+      recommendations,
+      llmStatuses: llmStatuses.length > 0 ? llmStatuses : undefined,
     };
   } catch (error) {
     console.error('runAnalysis 오류:', error);
@@ -558,54 +775,4 @@ function calculateStructureScore(
     }
   }
   return Math.min(100, Math.max(0, score));
-}
-
-function calculateQuestionCoverage(
-  pageQuestions: string[],
-  searchQuestions: Pick<SearchQuestion, 'text'>[],
-  contentText: string
-): { questionCoverage: number } {
-  if (!searchQuestions || searchQuestions.length === 0) return { questionCoverage: 0 };
-
-  const questionText = pageQuestions.join(' ').toLowerCase();
-  const fullText = contentText.toLowerCase();
-  let coveredCount = 0;
-
-  for (const searchQ of searchQuestions) {
-    const searchTokens = searchQ.text.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
-    if (searchTokens.length === 0) continue;
-
-    const minMatch = Math.max(1, Math.ceil(searchTokens.length * TOKEN_MATCH_RATIO));
-
-    let fullTextMatches = 0;
-    for (const token of searchTokens) {
-      if (fullText.includes(token)) fullTextMatches++;
-    }
-    if (fullTextMatches >= minMatch) {
-      coveredCount++;
-      continue;
-    }
-
-    let questionMatches = 0;
-    for (const token of searchTokens) {
-      if (questionText.includes(token)) questionMatches++;
-    }
-    if (questionMatches >= minMatch) {
-      coveredCount++;
-      continue;
-    }
-
-    const minIntersection =
-      searchTokens.length <= SHORT_QUESTION_TOKEN_THRESHOLD ? MIN_INTERSECTION_SHORT : MIN_INTERSECTION;
-    for (const pageQ of pageQuestions) {
-      const pageTokens = pageQ.toLowerCase().split(/\s+/).filter((t) => t.length >= 2);
-      const intersection = searchTokens.filter((t) => pageTokens.includes(t));
-      if (intersection.length >= minIntersection) {
-        coveredCount++;
-        break;
-      }
-    }
-  }
-
-  return { questionCoverage: coveredCount / searchQuestions.length };
 }

@@ -2,6 +2,14 @@ import * as cheerio from 'cheerio';
 import type { ChunkCitation } from './analysisTypes';
 import { computeChunkInfoDensity } from './paragraphAnalyzer';
 import { geminiFlash } from './geminiClient';
+import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
+import { withGeminiRetry, GEMINI_BATCH_SIZE, GEMINI_RETRY_DELAY } from './geminiRetry';
+
+let degradedMode = false;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 interface TextChunk {
   index: number;
@@ -58,31 +66,48 @@ export interface EvaluateCitationsParams {
 export async function evaluateCitations(params: EvaluateCitationsParams): Promise<ChunkCitation[]> {
   const { chunks, searchQuestions, isFaqLikePage = false, hasActualAiCitation = false } = params;
 
-  if (!geminiFlash || chunks.length === 0) {
-    return [];
+  if (!geminiFlash || chunks.length === 0) return [];
+  if (isLlmCooldown()) {
+    const sec = getCooldownRemainingSec();
+    console.warn('[GEMINI] cooldown active - skip citations', { retryAfterSec: sec });
+    throw new CitationQuotaSkipError(sec ?? undefined);
   }
 
-  const chunkList = chunks.map(c => `[${c.index}] ${c.text}`).join('\n---\n');
   const questionList =
     searchQuestions.length > 0
       ? searchQuestions.map(q => q.text).join('\n')
       : '(커뮤니티 질문 데이터 없음)';
 
-  let systemHint = `You are an AI search citation evaluator. Evaluate each text chunk by SEMANTIC value, not keyword matching.
+  const batchSize = GEMINI_BATCH_SIZE;
+  const delayMs = degradedMode ? GEMINI_RETRY_DELAY * 1.5 : GEMINI_RETRY_DELAY;
+  const batches: TextChunk[][] = [];
+  for (let i = 0; i < chunks.length; i += batchSize) {
+    batches.push(chunks.slice(i, i + batchSize));
+  }
+
+  const allResults: ChunkCitation[] = [];
+
+  for (let b = 0; b < batches.length; b++) {
+    if (b > 0) await sleep(delayMs);
+
+    const batch = batches[b];
+    const chunkList = batch.map(c => `[${c.index}] ${c.text}`).join('\n---\n');
+
+    let systemHint = `You are an AI search citation evaluator. Evaluate each text chunk by SEMANTIC value, not keyword matching.
 
 Key question: "Would this paragraph be a REAL SOLUTION that an AI (Google AI Overview, ChatGPT, Perplexity) would cite to answer user questions?"`;
 
-  if (hasActualAiCitation || isFaqLikePage) {
-    systemHint += `
+    if (hasActualAiCitation || isFaqLikePage) {
+      systemHint += `
 
 ADDITIONAL CONTEXT:
 - This page is already an actual FAQ source that AI (e.g., ChatGPT, AI Overview) selects as a citation.
 - Prioritize "answer clarity" and "direct answer to the user's question" when scoring.
 - Give higher citation scores to chunks that clearly answer the question, even if they are short.
 - Prioritize question-answer matching over length or rhetorical flair.`;
-  }
+    }
 
-  const prompt = `${systemHint}
+    const prompt = `${systemHint}
 
 For each chunk, evaluate:
 
@@ -109,30 +134,56 @@ Format: [{"index":0,"score":7,"community_fit":6,"reason":"..."}]
 
 JSON:`;
 
-  try {
-    console.log('[GEMINI] evaluateCitations call start', { chunkCount: chunks.length });
-    const result = await geminiFlash.generateContent([{ text: prompt }]);
-    const raw = result.response.text().trim();
-    const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
-    const parsed: { index: number; score: number; community_fit?: number; communityFit?: number; reason: string }[] =
-      JSON.parse(jsonStr);
+    const result = await withGeminiRetry(
+      () => geminiFlash.generateContent([{ text: prompt }]),
+      { feature: 'citations', maxRetries: 3 }
+    );
 
-    return parsed.map(item => {
-      const chunk = chunks.find(c => c.index === item.index);
-      const text = chunk?.text ?? '';
-      const cf = item.community_fit ?? item.communityFit;
-      return {
-        index: item.index,
-        text: text.substring(0, 200),
-        score: Math.max(0, Math.min(10, item.score)),
-        reason: item.reason ?? '',
-        communityFitScore: cf != null ? Math.round(cf * 10) : undefined,
-        infoDensity: Math.round(computeChunkInfoDensity(text) * 100) / 100,
-      };
-    });
-  } catch (err) {
-    console.error('citationEvaluator error:', err);
-    return [];
+    if (!result.ok) {
+      degradedMode = true;
+      if (result.status === 'skipped_quota') {
+        const err = new CitationQuotaSkipError(result.retryAfterSec);
+        err.userMessage = result.message;
+        throw err;
+      }
+      console.error('[citationEvaluator] Gemini error', result.message);
+      return [];
+    }
+
+    try {
+      const raw = result.data.response.text().trim();
+      const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
+      const parsed: { index: number; score: number; community_fit?: number; communityFit?: number; reason: string }[] =
+        JSON.parse(jsonStr);
+
+      for (const item of parsed) {
+        const chunk = batch.find(c => c.index === item.index);
+        const text = chunk?.text ?? '';
+        const cf = item.community_fit ?? item.communityFit;
+        allResults.push({
+          index: item.index,
+          text: text.substring(0, 200),
+          score: Math.max(0, Math.min(10, item.score)),
+          reason: item.reason ?? '',
+          communityFitScore: cf != null ? Math.round(cf * 10) : undefined,
+          infoDensity: Math.round(computeChunkInfoDensity(text) * 100) / 100,
+        });
+      }
+    } catch (parseErr) {
+      console.warn('[citationEvaluator] JSON parse error', parseErr);
+    }
+  }
+
+  return allResults.sort((a, b) => a.index - b.index);
+}
+
+export class CitationQuotaSkipError extends Error {
+  retryAfterSec?: number;
+  userMessage?: string;
+  constructor(retryAfterSec?: number) {
+    super('Quota exceeded - citations skipped');
+    this.name = 'CitationQuotaSkipError';
+    this.retryAfterSec = retryAfterSec;
   }
 }
 

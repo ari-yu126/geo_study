@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { AnalysisResult, AuditIssue, IframePositionData, PassedCheck } from "@/lib/analysisTypes";
+import { computeSimulatedScores } from "@/lib/simulationScore";
 import { toEmbedUrl } from "@/lib/youtubeMetadataExtractor";
 import { deriveAuditIssues } from "@/lib/issueDetector";
 import AuditPanel from "./components/AuditPanel";
@@ -37,6 +38,7 @@ export default function Home() {
 
   const [positionData, setPositionData] = useState<IframePositionData | null>(null);
   const [issues, setIssues] = useState<AuditIssue[]>([]);
+  const [includeSimulatedInExport, setIncludeSimulatedInExport] = useState(false);
   const [passedChecks, setPassedChecks] = useState<PassedCheck[]>([]);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   const [iframeScrollTop, setIframeScrollTop] = useState(0);
@@ -181,7 +183,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url: targetUrl.trim(),
-          forceRefresh: true,
+          forceRefresh: false,
         }),
       });
 
@@ -346,7 +348,11 @@ export default function Home() {
     setExporting(true);
     try {
       const { exportToPPT } = await import("./utils/pptExporter");
-      await exportToPPT(result);
+      const actualResult = result;
+      const options = includeSimulatedInExport
+        ? { simulatedScores: computeSimulatedScores(actualResult, issues) }
+        : undefined;
+      await exportToPPT(actualResult, options);
     } catch (e) {
       alert("PPT 생성 오류: " + (e as Error).message);
     } finally {
@@ -367,6 +373,8 @@ export default function Home() {
           onIssueClick={handleIssueClick}
           onReset={handleReset}
           onExportPPT={handleExportPPT}
+          includeSimulatedInExport={includeSimulatedInExport}
+          onIncludeSimulatedInExportChange={setIncludeSimulatedInExport}
           onNavigate={(newUrl) => runAnalyze(newUrl)}
           onQuestionClick={handleQuestionClick}
           onPassedCheckClick={handlePassedCheckClick}

@@ -1,4 +1,5 @@
-import type { AnalysisResult } from "@/lib/analysisTypes";
+import type { AnalysisResult, GeoScores } from "@/lib/analysisTypes";
+import { isYouTubeUrl } from "@/lib/youtubeMetadataExtractor";
 
 function scoreColor(score: number, max: number): string {
   const p = score / max;
@@ -17,18 +18,44 @@ function gradeInfo(score: number) {
   return { grade: "D", label: "개선필요", color: "F05C7A" };
 }
 
-export async function exportToPPT(result: AnalysisResult): Promise<void> {
+/** 영상 페이지에서 paragraph/structure/headings 기반 0값은 N/A 표시 (미적용 지표) */
+function formatScoreDisplay(
+  value: number | undefined,
+  isVideo: boolean,
+  forVideoNa = false
+): string {
+  const num = value ?? 0;
+  if (forVideoNa && isVideo && num === 0) return "N/A (영상 페이지 특성)";
+  return String(num);
+}
+
+export interface ExportPPTOptions {
+  /** 부록에만 넣을 경우에만 전달. 기본 슬라이드에는 사용하지 않음 */
+  simulatedScores?: GeoScores;
+}
+
+/**
+ * UI에 렌더된 AnalysisResult만 사용해 PPT 생성. runAnalysis 재호출 없음.
+ * 슬라이드 값은 result.scores / issues / recommendations / searchQuestions / covered 등 실제 result 필드만 사용.
+ */
+export async function exportToPPT(
+  result: AnalysisResult,
+  options?: ExportPPTOptions
+): Promise<void> {
   const PptxGenJS = (await import("pptxgenjs")).default;
   const pptx = new PptxGenJS();
   pptx.layout = "LAYOUT_WIDE";
 
+  const isVideo =
+    result.pageType === "video" || isYouTubeUrl(result.url);
   const BG = "080C14";
   const SURFACE = "0F1623";
   const CARD = "141D2E";
   const BORDER = "1E2D45";
   const TEXT = "E8EDF5";
   const MUTED = "6B7D96";
-  const gi = gradeInfo(result.scores.finalScore);
+  const sc = result.scores;
+  const gi = gradeInfo(sc.finalScore);
 
   // SLIDE 1: 표지
   {
@@ -51,41 +78,53 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
     s.addShape(pptx.ShapeType.roundRect, { x: 8.8, y: 1.4, w: 3.2, h: 2.2, fill: { color: CARD }, line: { color: gi.color, pt: 2 }, rectRadius: 0.2 });
     s.addText("종합 GEO 등급", { x: 8.8, y: 1.6, w: 3.2, h: 0.3, fontSize: 10, color: MUTED, align: "center", fontFace: "Arial" });
     s.addText(gi.grade, { x: 8.8, y: 1.9, w: 3.2, h: 0.85, fontSize: 55, bold: true, color: gi.color, align: "center", fontFace: "Arial" });
-    s.addText(`${result.scores.finalScore}점 / 100점`, { x: 8.8, y: 2.8, w: 3.2, h: 0.3, fontSize: 11, color: TEXT, align: "center", fontFace: "Arial" });
+    s.addText(`${sc.finalScore}점 / 100점`, { x: 8.8, y: 2.8, w: 3.2, h: 0.3, fontSize: 11, color: TEXT, align: "center", fontFace: "Arial" });
     s.addText(gi.label, { x: 8.8, y: 3.15, w: 3.2, h: 0.28, fontSize: 9, color: MUTED, align: "center", fontFace: "Arial" });
   }
 
-  // SLIDE 2: 종합 점수
+  // SLIDE 2: 종합 점수 (UI와 동일 — result.scores만 사용)
   {
     const s = pptx.addSlide();
     s.background = { color: BG };
     s.addText("종합 GEO 점수", { x: 0.5, y: 0.3, w: 12, h: 0.55, fontSize: 22, bold: true, color: TEXT, fontFace: "Arial" });
     s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 0.88, w: 12, h: 0.03, fill: { color: BORDER }, line: { type: "none" } });
 
-    const items = [
-      { label: "구조 점수", score: result.scores.structureScore, max: 100, color: scoreColor(result.scores.structureScore, 100), icon: "📐" },
-      { label: "질문 커버리지", score: result.scores.questionCoverage, max: 100, color: scoreColor(result.scores.questionCoverage, 100), icon: "🎯" },
-      { label: "최종 점수", score: result.scores.finalScore, max: 100, color: gi.color, icon: "⭐" },
+    const items: { label: string; score: number; display: string; max: number; color: string }[] = [
+      { label: "구조", score: sc.structureScore, display: formatScoreDisplay(sc.structureScore, isVideo, true), max: 100, color: scoreColor(sc.structureScore, 100) },
+      { label: "질문 커버리지", score: sc.questionCoverage, display: formatScoreDisplay(sc.questionCoverage, isVideo, false), max: 100, color: scoreColor(sc.questionCoverage, 100) },
+      { label: "최종 점수", score: sc.finalScore, display: String(sc.finalScore), max: 100, color: gi.color },
     ];
-
     items.forEach((item, i) => {
       const x = 0.5 + i * 4.2;
-      const barW = 3.5 * (item.score / item.max);
+      const barW = item.display.startsWith("N/A") ? 0 : 3.5 * (item.score / item.max);
       s.addShape(pptx.ShapeType.roundRect, { x, y: 1.1, w: 3.9, h: 2.4, fill: { color: SURFACE }, line: { color: BORDER, pt: 1 }, rectRadius: 0.15 });
-      s.addText(`${item.icon}  ${item.label}`, { x: x + 0.18, y: 1.28, w: 3.5, h: 0.35, fontSize: 11, bold: true, color: TEXT, fontFace: "Arial" });
-      s.addText(`${item.score}`, { x: x + 0.18, y: 1.65, w: 3.5, h: 0.7, fontSize: 40, bold: true, color: item.color, fontFace: "Arial" });
-      s.addText(`/ ${item.max}점`, { x: x + 1.4, y: 2.1, w: 2, h: 0.3, fontSize: 11, color: MUTED, fontFace: "Arial" });
+      s.addText(item.label, { x: x + 0.18, y: 1.28, w: 3.5, h: 0.35, fontSize: 11, bold: true, color: TEXT, fontFace: "Arial" });
+      s.addText(item.display, { x: x + 0.18, y: 1.65, w: 3.5, h: 0.7, fontSize: item.display.startsWith("N/A") ? 14 : 40, bold: true, color: item.color, fontFace: "Arial" });
+      if (!item.display.startsWith("N/A")) s.addText(`/ ${item.max}점`, { x: x + 1.4, y: 2.1, w: 2, h: 0.3, fontSize: 11, color: MUTED, fontFace: "Arial" });
       s.addShape(pptx.ShapeType.rect, { x: x + 0.18, y: 2.7, w: 3.5, h: 0.14, fill: { color: BORDER }, line: { type: "none" } });
       if (barW > 0) s.addShape(pptx.ShapeType.rect, { x: x + 0.18, y: 2.7, w: barW, h: 0.14, fill: { color: item.color }, line: { type: "none" } });
-      s.addText(`${item.score}%`, { x: x + 0.18, y: 2.9, w: 3.5, h: 0.28, fontSize: 9, color: MUTED, fontFace: "Arial" });
+      s.addText(item.display.startsWith("N/A") ? item.display : `${item.score}%`, { x: x + 0.18, y: 2.9, w: 3.5, h: 0.28, fontSize: 9, color: MUTED, fontFace: "Arial" });
     });
 
+    let badgeX = 0.5;
+    const hasCitation = (sc.citationScore ?? -1) >= 0;
+    if (hasCitation) {
+      s.addShape(pptx.ShapeType.roundRect, { x: badgeX, y: 3.55, w: 1.9, h: 0.36, fill: { color: SURFACE }, line: { color: BORDER, pt: 1 }, rectRadius: 0.08 });
+      s.addText(`AI 인용: ${formatScoreDisplay(sc.citationScore, isVideo, true)}`, { x: badgeX + 0.1, y: 3.6, w: 1.7, h: 0.28, fontSize: 9, color: "A855F7", fontFace: "Arial" });
+      badgeX += 2;
+    }
+    s.addShape(pptx.ShapeType.roundRect, { x: badgeX, y: 3.55, w: 1.5, h: 0.36, fill: { color: SURFACE }, line: { color: BORDER, pt: 1 }, rectRadius: 0.08 });
+    s.addText(`문단: ${formatScoreDisplay(sc.paragraphScore ?? 0, isVideo, true)}`, { x: badgeX + 0.1, y: 3.6, w: 1.3, h: 0.28, fontSize: 9, color: "5B6EF5", fontFace: "Arial" });
+    badgeX += 1.7;
+    s.addShape(pptx.ShapeType.roundRect, { x: badgeX, y: 3.55, w: 1.5, h: 0.36, fill: { color: SURFACE }, line: { color: BORDER, pt: 1 }, rectRadius: 0.08 });
+    s.addText(`신뢰: ${formatScoreDisplay(sc.trustScore ?? 0, isVideo, false)}`, { x: badgeX + 0.1, y: 3.6, w: 1.3, h: 0.28, fontSize: 9, color: "F5A623", fontFace: "Arial" });
+
     if (result.meta.title) {
-      s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 3.7, w: 12, h: 1.5, fill: { color: CARD }, line: { color: BORDER, pt: 1 }, rectRadius: 0.12 });
-      s.addText("페이지 제목", { x: 0.7, y: 3.82, w: 3, h: 0.25, fontSize: 9, color: MUTED, fontFace: "Arial" });
-      s.addText(result.meta.title, { x: 0.7, y: 4.05, w: 11, h: 0.35, fontSize: 13, bold: true, color: TEXT, fontFace: "Arial" });
+      s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 4.05, w: 12, h: 1.15, fill: { color: CARD }, line: { color: BORDER, pt: 1 }, rectRadius: 0.12 });
+      s.addText("Title", { x: 0.7, y: 4.12, w: 3, h: 0.25, fontSize: 9, color: MUTED, fontFace: "Arial" });
+      s.addText(result.meta.title, { x: 0.7, y: 4.32, w: 11, h: 0.35, fontSize: 13, bold: true, color: TEXT, fontFace: "Arial" });
       if (result.meta.description) {
-        s.addText(result.meta.description.slice(0, 120) + (result.meta.description.length > 120 ? "..." : ""), { x: 0.7, y: 4.45, w: 11, h: 0.55, fontSize: 10, color: MUTED, fontFace: "Arial", wrap: true });
+        s.addText(result.meta.description.slice(0, 120) + (result.meta.description.length > 120 ? "..." : ""), { x: 0.7, y: 4.72, w: 11, h: 0.4, fontSize: 10, color: MUTED, fontFace: "Arial", wrap: true });
       }
     }
   }
@@ -97,9 +136,15 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
     s.addText("핵심 키워드 분석", { x: 0.5, y: 0.3, w: 12, h: 0.55, fontSize: 22, bold: true, color: TEXT, fontFace: "Arial" });
     s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 0.88, w: 12, h: 0.03, fill: { color: BORDER }, line: { type: "none" } });
 
+    const keywords = result.seedKeywords?.slice(0, 20) ?? [];
     const colors = ["5B6EF5", "00D4C8", "F5A623", "F05C7A", "34D399"];
     let kx = 0.5, ky = 1.1;
-    result.seedKeywords.slice(0, 20).forEach((kw, i) => {
+    if (keywords.length === 0) {
+      s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 1.1, w: 12, h: 1.2, fill: { color: SURFACE }, line: { color: BORDER, pt: 1 }, rectRadius: 0.12 });
+      s.addText("추출된 핵심 키워드가 없습니다.", { x: 0.7, y: 1.5, w: 11.6, h: 0.5, fontSize: 14, color: MUTED, fontFace: "Arial" });
+      s.addText("페이지 제목·설명·본문에서 키워드가 추출되지 않았거나, 영상 페이지의 경우 API 응답에 citationKeywords가 없을 수 있습니다.", { x: 0.7, y: 2.0, w: 11.6, h: 0.6, fontSize: 11, color: MUTED, fontFace: "Arial", wrap: true });
+    } else {
+      keywords.forEach((kw, i) => {
       const col = colors[i % colors.length];
       const fontSize = kw.score > 0.6 ? 14 : kw.score > 0.3 ? 11 : 9;
       const estW = kw.value.length * 0.13 + 0.5;
@@ -108,6 +153,7 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
       s.addText(kw.value, { x: kx, y: ky, w: estW, h: 0.42, fontSize, color: TEXT, align: "center", fontFace: "Arial", bold: kw.score > 0.6 });
       kx += estW + 0.18;
     });
+    }
   }
 
   // SLIDE 4: 질문 커버리지 현황 (핵심 장표) — 유저 검색 + AI 예상 통합
@@ -270,8 +316,8 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
     const tips = [];
     if (!result.meta.title) tips.push({ title: "Title 태그 추가", tip: "페이지 주제를 담은 명확한 title을 설정하세요.", priority: "high" });
     if (!result.meta.description) tips.push({ title: "Meta Description 작성", tip: "핵심 답변이 포함된 150자 내외의 description을 작성하세요.", priority: "high" });
-    if (result.scores.structureScore < 60) tips.push({ title: "헤딩 구조 개선", tip: "H2 소제목을 질문형으로 재구성하고 본문 첫 단락에 핵심 답변을 배치하세요.", priority: "high" });
-    if (result.scores.questionCoverage < 40) tips.push({ title: "FAQ 섹션 추가", tip: "사용자가 AI에게 물을 법한 질문-답변 블록을 본문에 추가하세요.", priority: "medium" });
+    if (sc.structureScore < 60) tips.push({ title: "헤딩 구조 개선", tip: "H2 소제목을 질문형으로 재구성하고 본문 첫 단락에 핵심 답변을 배치하세요.", priority: "high" });
+    if (sc.questionCoverage < 40) tips.push({ title: "FAQ 섹션 추가", tip: "사용자가 AI에게 물을 법한 질문-답변 블록을 본문에 추가하세요.", priority: "medium" });
     if (!result.meta.canonical) tips.push({ title: "Canonical URL 설정", tip: "중복 콘텐츠 방지를 위해 canonical 태그를 추가하세요.", priority: "medium" });
     tips.push({ title: "Schema 마크업 추가", tip: "FAQPage, Article 스키마를 JSON-LD 형식으로 추가하면 AI 인식률이 높아집니다.", priority: "low" });
     if (result.recommendations?.actionPlan?.priorityNotes) {
@@ -309,16 +355,16 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
     s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 1.2, w: 3.5, h: 2.6, fill: { color: CARD }, line: { color: gi.color, pt: 2 }, rectRadius: 0.2 });
     s.addText("종합 GEO 등급", { x: 0.5, y: 1.38, w: 3.5, h: 0.3, fontSize: 10, color: MUTED, align: "center", fontFace: "Arial" });
     s.addText(gi.grade, { x: 0.5, y: 1.68, w: 3.5, h: 0.85, fontSize: 60, bold: true, color: gi.color, align: "center", fontFace: "Arial" });
-    s.addText(`${result.scores.finalScore}점 / 100`, { x: 0.5, y: 2.58, w: 3.5, h: 0.3, fontSize: 13, color: TEXT, align: "center", fontFace: "Arial" });
+    s.addText(`${sc.finalScore}점 / 100`, { x: 0.5, y: 2.58, w: 3.5, h: 0.3, fontSize: 13, color: TEXT, align: "center", fontFace: "Arial" });
     s.addText(gi.label, { x: 0.5, y: 2.92, w: 3.5, h: 0.3, fontSize: 10, color: MUTED, align: "center", fontFace: "Arial" });
-    s.addText(`구조: ${result.scores.structureScore}점  ·  커버리지: ${result.scores.questionCoverage}%`, { x: 0.5, y: 3.3, w: 3.5, h: 0.28, fontSize: 9, color: MUTED, align: "center", fontFace: "Arial" });
+    s.addText(`구조: ${formatScoreDisplay(sc.structureScore, isVideo, true)}  ·  커버리지: ${formatScoreDisplay(sc.questionCoverage, isVideo, false)}`, { x: 0.5, y: 3.3, w: 3.5, h: 0.28, fontSize: 9, color: MUTED, align: "center", fontFace: "Arial" });
 
     s.addText("즉시 실행 가능한 개선 항목", { x: 4.3, y: 1.2, w: 8, h: 0.35, fontSize: 11, bold: true, color: TEXT, fontFace: "Arial" });
-    const urgents = [];
+    const urgents: string[] = [];
     if (!result.meta.title) urgents.push("Title 태그 추가");
     if (!result.meta.description) urgents.push("Meta Description 작성");
-    if (result.scores.structureScore < 60) urgents.push("헤딩 구조를 질문형으로 개선");
-    if (result.scores.questionCoverage < 40) urgents.push("FAQ 섹션 추가");
+    if (sc.structureScore < 60) urgents.push("헤딩 구조를 질문형으로 개선");
+    if (sc.questionCoverage < 40) urgents.push("FAQ 섹션 추가");
     if (!result.meta.canonical) urgents.push("Canonical URL 설정");
 
     urgents.slice(0, 5).forEach((u, i) => {
@@ -329,6 +375,25 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
 
     s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 4.5, w: 12, h: 0.78, fill: { color: CARD }, line: { color: BORDER, pt: 1 }, rectRadius: 0.1 });
     s.addText(`분석 URL: ${result.url}  |  분석일: ${new Date(result.analyzedAt).toLocaleDateString("ko-KR")}`, { x: 0.5, y: 4.5, w: 12, h: 0.78, fontSize: 9, color: MUTED, align: "center", fontFace: "Arial" });
+  }
+
+  // 부록: 예상 점수 (옵션. 기본 슬라이드에는 미포함)
+  if (options?.simulatedScores) {
+    const sim = options.simulatedScores;
+    const s = pptx.addSlide();
+    s.background = { color: BG };
+    s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 0.2, w: 3.8, h: 0.4, fill: { color: "F5A623", transparency: 80 }, line: { color: "F5A623", pt: 1 }, rectRadius: 0.08 });
+    s.addText("부록 · 시뮬레이션", { x: 0.5, y: 0.22, w: 3.8, h: 0.36, fontSize: 10, bold: true, color: "F5A623", align: "center", fontFace: "Arial" });
+    s.addText("부록: 개선안 적용 시 예상 점수(시뮬레이션)", { x: 0.5, y: 0.65, w: 12, h: 0.5, fontSize: 20, bold: true, color: TEXT, fontFace: "Arial" });
+    s.addText("아래 값은 시뮬레이션 예상치이며, 메인 슬라이드의 실제 분석 결과와 별도입니다.", { x: 0.5, y: 1.1, w: 12, h: 0.3, fontSize: 10, color: MUTED, fontFace: "Arial" });
+    s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 1.4, w: 12, h: 0.03, fill: { color: BORDER }, line: { type: "none" } });
+
+    const simGi = gradeInfo(sim.finalScore);
+    s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 1.7, w: 3.5, h: 1.8, fill: { color: CARD }, line: { color: simGi.color, pt: 2 }, rectRadius: 0.12 });
+    s.addText("예상 최종", { x: 0.5, y: 1.82, w: 3.5, h: 0.28, fontSize: 9, color: MUTED, align: "center", fontFace: "Arial" });
+    s.addText(String(sim.finalScore), { x: 0.5, y: 2.1, w: 3.5, h: 0.7, fontSize: 44, bold: true, color: simGi.color, align: "center", fontFace: "Arial" });
+    s.addText(`/ 100점 (${simGi.label})`, { x: 0.5, y: 2.85, w: 3.5, h: 0.28, fontSize: 11, color: TEXT, align: "center", fontFace: "Arial" });
+    s.addText(`구조 ${sim.structureScore}  ·  커버리지 ${sim.questionCoverage}%  ·  문단 ${sim.paragraphScore ?? 0}  ·  신뢰 ${sim.trustScore ?? 0}`, { x: 4.2, y: 1.85, w: 8, h: 0.5, fontSize: 11, color: MUTED, fontFace: "Arial", wrap: true });
   }
 
   const domain = result.url.replace(/https?:\/\//, "").split("/")[0].replace(/\./g, "_");

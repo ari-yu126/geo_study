@@ -162,7 +162,17 @@ export function extractMetaAndContent(html: string): {
   );
 
   const fullHtml = $.html() ?? '';
-  const hasContactLink = /href=["'][^"']*(?:contact|문의|연락|상담|고객센터)/i.test(fullHtml);
+  const contactHrefPattern = /href=["'][^"']*(?:contact|문의|연락|상담|고객센터|inquiry|support|cs|help)/i;
+  let hasContactLink = contactHrefPattern.test(fullHtml);
+  if (!hasContactLink) {
+    $('a[href]').each((_, el) => {
+      const text = $(el).text().replace(/\s+/g, ' ').trim();
+      if (/연락|문의|상담|고객\s*센터|1:1|바로가기|전화|이메일|문의하기/i.test(text)) {
+        hasContactLink = true;
+        return false;
+      }
+    });
+  }
   const hasAboutLink = /href=["'][^"']*(?:about|소개|회사소개|기업소개)/i.test(fullHtml);
 
   $('script, style, noscript, svg').remove();

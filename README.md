@@ -2,6 +2,12 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+### 환경 변수
+
+`.env.local`에 `GOOGLE_GENAI_API_KEY` 또는 `GEMINI_API_KEY`를 설정하세요. **수정 후에는 `next dev`를 재시작해야 env가 반영됩니다.**
+
+### 개발 서버 실행
+
 First, run the development server:
 
 ```bash

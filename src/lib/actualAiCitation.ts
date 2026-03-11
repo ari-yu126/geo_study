@@ -1,4 +1,5 @@
 import { geminiFlash } from './geminiClient';
+import { isQuotaError, isLlmCooldown } from './llmError';
 import type { SearchQuestion } from './analysisTypes';
 
 /** 실제 AI 인용이 확인된 도메인 화이트리스트 — Gemini/Perplexity 검증 실패 시에도 사용 */
@@ -38,7 +39,7 @@ export async function checkActualAiCitation(
   }
 
   // Fallback: Gemini로 AI 인용 도메인 예측
-  if (!geminiFlash) return false;
+  if (!geminiFlash || isLlmCooldown()) return false;
 
   const sampleQuestions = searchQuestions.slice(0, 5).map((q) => q.text).join('\n- ');
   const title = pageTitle ?? '제목 없음';
@@ -73,7 +74,11 @@ samsung.com
       .filter((d) => d.length >= 4 && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d));
     return domainMatches(analysisHost, domains);
   } catch (err) {
-    console.warn('checkActualAiCitation failed', err);
+    if (isQuotaError(err)) {
+      console.warn('[GEMINI] quota exceeded - checkActualAiCitation, using false');
+    } else {
+      console.warn('checkActualAiCitation failed', err);
+    }
     return false;
   }
 }

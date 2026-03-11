@@ -1,5 +1,6 @@
 import { evaluateCheck } from './checkEvaluator';
 import { loadActiveScoringConfig } from './scoringConfigLoader';
+import { isYouTubeUrl } from './youtubeMetadataExtractor';
 import { DEFAULT_SCORING_CONFIG } from './defaultScoringConfig';
 import type {
   AnalysisResult,
@@ -56,8 +57,7 @@ function isStructureRelatedIssue(issue: AuditIssue): boolean {
 
 function isYouTubeResult(result: AnalysisResult): boolean {
   try {
-    const host = new URL(result.url).hostname.toLowerCase().replace(/^www\./, '');
-    return /youtube\.com$/i.test(host);
+    return isYouTubeUrl(result.url);
   } catch {
     return false;
   }
@@ -488,10 +488,13 @@ export async function deriveAuditIssues(
   let num = 1;
   const skipTextOnlyRules = isYouTubeResult(result);
 
+  const quotablePassed = evaluateCheck('quotable_sentences_min', features, config.issueRules.find((r) => r.id === 'quotable')?.threshold ?? 3);
+
   for (const rule of config.issueRules) {
     if (skipTextOnlyRules && YOUTUBE_SKIP_RULE_IDS.has(rule.id)) continue;
     const passed = evaluateCheck(rule.check, features, rule.threshold);
     if (!passed) {
+      if (rule.id === 'content_short' && quotablePassed) continue;
       issues.push({
         id: rule.id,
         number: num++,
