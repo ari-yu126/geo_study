@@ -39,17 +39,44 @@
 
 ### 3.2 분석 파이프라인 상세
 
-| 단계 | 처리 내용 |
-|------|-----------|
-| 1 | URL 정규화, 캐시 확인 (Supabase) |
-| 2 | **페이지 타입 감지** — 유튜브 / 일반 웹 / 쇼핑몰 |
-| 3a | **유튜브**: 메타데이터 추출 → Gemini 비디오 분석 → Tavily 질문 수집 → 결과 조립 |
-| 3b | **일반 웹**: HTML 크롤링 → 메타/본문 추출 → 키워드 추출 |
-| 4 | **검색 질문 수집** — Primary Topic 기반 Tavily 쿼리 → 테마 필터 → Gemini 관련성 필터 |
-| 5 | **병렬 실행** — 문단 품질 분석 + Gemini 인용 채점 |
-| 6 | **점수 산출** — 가변 가중치 적용, 최종 GEO 점수 계산 |
-| 7 | **이슈·권고** — deriveAuditIssues + generateGeoRecommendations (Gemini) |
-| 8 | AnalysisResult 반환 |
+| 단계 | 처리 내용 | AI(Gemini) 활용 |
+|------|-----------|-----------------|
+| 1 | URL 정규화, 캐시 확인 (Supabase) | — |
+| 2 | **페이지 타입 감지** — 유튜브 / 일반 웹 / 쇼핑몰 | — |
+| 3a | **유튜브**: 메타데이터 추출 → 비디오 분석 → Tavily 질문 수집 → 결과 조립 | **비디오 분석**: 제목·설명 기반 인용 점수, 핵심 키워드, 잘된 점/이슈 문장 생성 |
+| 3b | **일반 웹**: HTML 크롤링 → 메타/본문 추출 → 키워드 추출 | — |
+| 4 | **검색 질문 수집** — Primary Topic 기반 Tavily 쿼리 → 테마 필터 → 관련성 필터 | **관련성 필터**: 수집 질문 중 페이지 주제와 맞는 것만 선별 (STRICT RELEVANCE) |
+| 5 | **병렬 실행** — 문단 품질 분석 + 인용 채점 | **인용 채점**: 문단별로 "AI가 정답 출처로 인용할 확률" 의미적 평가 → 황금 문단 선정 |
+| 6 | **점수 산출** — 가변 가중치 적용, 최종 GEO 점수 계산 | (인용 점수는 5단계 Gemini 결과 사용) |
+| 7 | **이슈·권고** — deriveAuditIssues + generateGeoRecommendations | **권고 생성**: 트렌드 요약, 콘텐츠 갭, 액션 플랜(H2/블록), 예상 질문·미답변 Top 3 생성 |
+| 8 | AnalysisResult 반환 | — |
+
+요약: Gemini는 **유튜브 비디오 분석**, **검색 질문 관련성 필터**, **문단 인용 채점**, **권고·예상 질문 생성** 네 곳에서 사용된다.
+
+**단계 4 상세: 검색 질문 수집**
+
+페이지 주제에 맞는 질문만 쓰기 위해, 단일 키워드가 아니라 **주제 구문**을 기준으로 수집·필터링한다.
+
+1. **Primary Topic 도출**  
+   메타 타이틀, URL 경로 슬러그(예: `best-travel-hair-dryer`), 상위 시드 키워드를 합쳐 **primaryPhrase**(예: `travel hair dryer`)와 **essentialTokens**(예: `hair`, `dryer`, `travel`)를 만든다.  
+   제목·슬러그가 영어 위주면 `isEnglishPage`로 잡고, 한글 페이지면 한글 쿼리·필터를 쓴다.
+
+2. **Tavily 쿼리**  
+   `"primaryPhrase"`를 반드시 넣어서 검색한다.  
+   예: `"travel hair dryer" FAQ questions`, `"travel hair dryer" cons drawbacks review`.  
+   `best`, `후기`, `추천` 같은 단일 일반어만으로는 쿼리하지 않아 테마 이탈을 막는다.
+
+3. **테마 필터 (topicMatchFilter)**  
+   - 질문/스니펫에 **essentialTokens 중 1개 이상** 포함돼야 통과.  
+   - DB·백업·언어학습·수강·공무원 등 **negative 키워드** 포함 시 제거.  
+   - italki.com 등 **제외 도메인** 결과는 버린다.  
+   - Reddit `/r/Korean` 등 주제와 무관한 경로는 essentialTokens 2개 이상 있을 때만 허용.
+
+4. **Gemini 관련성 필터 (filterQuestionsByPageRelevance)**  
+   테마 필터 통과한 후보만(최대 20개) Gemini에 넘긴다.  
+   `primaryPhrase`가 있으면 **STRICT RELEVANCE** 지시로 "이 주제와 직접 관련된 질문만 남기고, 소프트웨어·DB·교육·언어 학습은 무조건 제거"하도록 한다.
+
+→ 최종적으로 **질문 커버리지**에 쓰일 `searchQuestions`만 남는다.
 
 ### 3.3 사용자 화면
 
