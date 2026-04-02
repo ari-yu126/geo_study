@@ -1,4 +1,4 @@
-import type { AnalysisResult, GeoScores } from "@/lib/analysisTypes";
+import type { AnalysisResult } from "@/lib/analysisTypes";
 import { isYouTubeUrl } from "@/lib/youtubeMetadataExtractor";
 
 function scoreColor(score: number, max: number): string {
@@ -29,19 +29,11 @@ function formatScoreDisplay(
   return String(num);
 }
 
-export interface ExportPPTOptions {
-  /** 부록에만 넣을 경우에만 전달. 기본 슬라이드에는 사용하지 않음 */
-  simulatedScores?: GeoScores;
-}
-
 /**
  * UI에 렌더된 AnalysisResult만 사용해 PPT 생성. runAnalysis 재호출 없음.
  * 슬라이드 값은 result.scores / issues / recommendations / searchQuestions / covered 등 실제 result 필드만 사용.
  */
-export async function exportToPPT(
-  result: AnalysisResult,
-  options?: ExportPPTOptions
-): Promise<void> {
+export async function exportToPPT(result: AnalysisResult): Promise<void> {
   const PptxGenJS = (await import("pptxgenjs")).default;
   const pptx = new PptxGenJS();
   pptx.layout = "LAYOUT_WIDE";
@@ -375,25 +367,6 @@ export async function exportToPPT(
 
     s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 4.5, w: 12, h: 0.78, fill: { color: CARD }, line: { color: BORDER, pt: 1 }, rectRadius: 0.1 });
     s.addText(`분석 URL: ${result.url}  |  분석일: ${new Date(result.analyzedAt).toLocaleDateString("ko-KR")}`, { x: 0.5, y: 4.5, w: 12, h: 0.78, fontSize: 9, color: MUTED, align: "center", fontFace: "Arial" });
-  }
-
-  // 부록: 예상 점수 (옵션. 기본 슬라이드에는 미포함)
-  if (options?.simulatedScores) {
-    const sim = options.simulatedScores;
-    const s = pptx.addSlide();
-    s.background = { color: BG };
-    s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 0.2, w: 3.8, h: 0.4, fill: { color: "F5A623", transparency: 80 }, line: { color: "F5A623", pt: 1 }, rectRadius: 0.08 });
-    s.addText("부록 · 시뮬레이션", { x: 0.5, y: 0.22, w: 3.8, h: 0.36, fontSize: 10, bold: true, color: "F5A623", align: "center", fontFace: "Arial" });
-    s.addText("부록: 개선안 적용 시 예상 점수(시뮬레이션)", { x: 0.5, y: 0.65, w: 12, h: 0.5, fontSize: 20, bold: true, color: TEXT, fontFace: "Arial" });
-    s.addText("아래 값은 시뮬레이션 예상치이며, 메인 슬라이드의 실제 분석 결과와 별도입니다.", { x: 0.5, y: 1.1, w: 12, h: 0.3, fontSize: 10, color: MUTED, fontFace: "Arial" });
-    s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 1.4, w: 12, h: 0.03, fill: { color: BORDER }, line: { type: "none" } });
-
-    const simGi = gradeInfo(sim.finalScore);
-    s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 1.7, w: 3.5, h: 1.8, fill: { color: CARD }, line: { color: simGi.color, pt: 2 }, rectRadius: 0.12 });
-    s.addText("예상 최종", { x: 0.5, y: 1.82, w: 3.5, h: 0.28, fontSize: 9, color: MUTED, align: "center", fontFace: "Arial" });
-    s.addText(String(sim.finalScore), { x: 0.5, y: 2.1, w: 3.5, h: 0.7, fontSize: 44, bold: true, color: simGi.color, align: "center", fontFace: "Arial" });
-    s.addText(`/ 100점 (${simGi.label})`, { x: 0.5, y: 2.85, w: 3.5, h: 0.28, fontSize: 11, color: TEXT, align: "center", fontFace: "Arial" });
-    s.addText(`구조 ${sim.structureScore}  ·  커버리지 ${sim.questionCoverage}%  ·  문단 ${sim.paragraphScore ?? 0}  ·  신뢰 ${sim.trustScore ?? 0}`, { x: 4.2, y: 1.85, w: 8, h: 0.5, fontSize: 11, color: MUTED, fontFace: "Arial", wrap: true });
   }
 
   const domain = result.url.replace(/https?:\/\//, "").split("/")[0].replace(/\./g, "_");

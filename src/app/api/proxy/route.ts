@@ -360,8 +360,63 @@ export async function GET(req: NextRequest) {
     });
 
     if (!response.ok) {
+      // Gather upstream metadata
+      const finalUrl = response.url || url;
+      const upstreamStatus = response.status;
+      const upstreamStatusText = response.statusText || '';
+      const upstreamHeaders: Record<string, string | null> = {
+        'content-type': response.headers.get('content-type'),
+        server: response.headers.get('server'),
+        via: response.headers.get('via'),
+        'x-amz-cf-id': response.headers.get('x-amz-cf-id'),
+        'x-amz-cf-pop': response.headers.get('x-amz-cf-pop'),
+        'x-reference-error': response.headers.get('x-reference-error'),
+      };
+
+      // Read a safe snippet of the body for diagnostics (first 500 chars)
+      let bodySnippet = '';
+      try {
+        const text = await response.text();
+        bodySnippet = text ? text.substring(0, 500) : '';
+      } catch (e) {
+        bodySnippet = '';
+      }
+
+      // Classify error type
+      let errorType: 'WAF_BLOCK' | 'CLOUDFRONT_ERROR' | 'INTERSTITIAL' | 'NOT_FOUND' | 'UNKNOWN' = 'UNKNOWN';
+      const bodyLower = (bodySnippet || '').toLowerCase();
+      const serverHeader = (upstreamHeaders.server || '')?.toLowerCase() ?? '';
+      if (upstreamStatus === 404) {
+        errorType = 'NOT_FOUND';
+      } else if (/akamai|akamaighost|AkamaiGHost/i.test(String(upstreamHeaders.server || '')) || upstreamHeaders['x-reference-error']) {
+        errorType = 'WAF_BLOCK';
+      } else if (upstreamHeaders['x-amz-cf-id' as keyof typeof upstreamHeaders] || (upstreamHeaders.via && String(upstreamHeaders.via).toLowerCase().includes('cloudfront')) || upstreamStatus >= 500) {
+        errorType = 'CLOUDFRONT_ERROR';
+      }
+      if (/(access denied|forbidden|waf|captcha|interstitial|robot or human|please enable javascript)/i.test(bodyLower)) {
+        errorType = 'INTERSTITIAL';
+      }
+
+      // Server-side debug log
+      console.error('[Proxy Error]');
+      console.error('  URL:', url);
+      console.error('  Final URL:', finalUrl);
+      console.error('  Status:', upstreamStatus, upstreamStatusText);
+      console.error('  ErrorType:', errorType);
+      console.error('  Key headers:', JSON.stringify(upstreamHeaders, null, 2));
+      console.error('  Body snippet:', bodySnippet.replace(/\n/g, '\\n').slice(0, 500));
+
+      // Structured JSON response for diagnostics (do not mask upstream info)
       return NextResponse.json(
-        { error: `원본 사이트 요청 실패: ${response.status}` },
+        {
+          ok: false,
+          upstreamStatus,
+          upstreamStatusText,
+          finalUrl,
+          errorType,
+          upstreamHeaders,
+          errorSnippet: bodySnippet,
+        },
         { status: 502 }
       );
     }

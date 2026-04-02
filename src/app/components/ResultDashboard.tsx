@@ -6,6 +6,8 @@ import { SCORE_CRITERIA } from "@/lib/scoreCriteria";
 import ScoreGauge, { getGradeInfo } from "./ScoreGauge";
 import CategoryBar from "./CategoryBar";
 import Sidebar from "./Sidebar";
+import References from "./References";
+import { EDITORIAL_SUBTYPE_LABEL, editorialSubtypeTooltip } from "../utils/geoExplainUi";
 
 interface ResultDashboardProps {
   result: AnalysisResult;
@@ -101,15 +103,35 @@ export default function ResultDashboard({ result, onReset }: ResultDashboardProp
           <div
             style={{
               flex: 1,
-              fontSize: 12,
-              color: "#7a8da3",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              fontFamily: "var(--font-mono)",
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
             }}
           >
-            {result.url}
+            <div
+              style={{
+                fontSize: 12,
+                color: "#7a8da3",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {result.url}
+            </div>
+            {result.pageType === "editorial" && result.editorialSubtype && (
+              <div
+                style={{ fontSize: 11, color: "#6d8099", fontFamily: "var(--font-body)" }}
+                title={editorialSubtypeTooltip(result) ?? undefined}
+              >
+                맥락: {EDITORIAL_SUBTYPE_LABEL[result.editorialSubtype]}
+                {result.editorialSubtypeDebug?.confidence != null
+                  ? ` · ${Math.round(result.editorialSubtypeDebug.confidence * 100)}%`
+                  : ""}
+              </div>
+            )}
           </div>
           <div style={{ fontSize: 12, color: "#6d8099", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}>
             분석 완료 · {new Date(result.analyzedAt).toLocaleString("ko-KR")}
@@ -217,6 +239,16 @@ export default function ResultDashboard({ result, onReset }: ResultDashboardProp
 
         {/* 탭 콘텐츠 */}
         <div style={{ padding: 24 }}>
+
+          {/* References section */}
+          <div style={{ marginBottom: 18 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: "#7a8da3", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontFamily: "var(--font-mono)" }}>
+              References & Research Sources
+            </h3>
+            <div style={{ background: "#0f1623", border: "1px solid #1e2d45", borderRadius: 12, padding: 12 }}>
+              <References />
+            </div>
+          </div>
 
           {/* 종합 탭 */}
           {activeTab === "overview" && (
@@ -349,7 +381,7 @@ export default function ResultDashboard({ result, onReset }: ResultDashboardProp
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {result.pageQuestions.map((q, i) => (
                       <div
-                        key={i}
+                        key={`page-q-${i}`}
                         style={{
                           background: "#0f1623",
                           border: "1px solid #1e2d45",
@@ -381,7 +413,7 @@ export default function ResultDashboard({ result, onReset }: ResultDashboardProp
                       const col = sourceColors[q.source] || "#8b9cb3";
                       return (
                         <div
-                          key={i}
+                          key={q.url ?? `search-q-${i}`}
                           style={{
                             background: "#0f1623",
                             borderRadius: 10,

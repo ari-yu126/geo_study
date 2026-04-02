@@ -1,0 +1,7 @@
+query,ai_system,cited_url,non_cited_url,domain,date,notes
+best standing desk,Perplexity,https://www.nytimes.com/wirecutter/reviews/best-standing-desk/,https://randomblog.com/best-standing-desk,nytimes.com,2026-04-01,comparison
+javascript map mdn,ChatGPT,https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map,https://randomsite.com/javascript-map-guide,developer.mozilla.org,2026-04-01,docs vs blog
+privacy policy example,Google AI Overview,https://termly.io/resources/templates/privacy-policy-template/,https://randomblog.com/privacy-policy-template,termly.io,2026-04-01,policy
+how to clean airpods,ChatGPT,https://support.apple.com/en-us/102672,https://randomblog.com/how-to-clean-airpods,apple.com,2026-04-01,help vs blog
+protein intake per day,ChatGPT,https://www.healthline.com/nutrition/how-much-protein-per-day,https://fitnessblog.com/protein-intake-guide,healthline.com,2026-04-01,health article
+notion pricing,Google AI Overview,https://www.notion.so/pricing,https://randomblog.com/notion-pricing-review,notion.so,2026-04-01,pricing

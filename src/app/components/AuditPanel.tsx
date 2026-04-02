@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, type ReactNode } from "react";
+import { useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
   Shield,
   Lightbulb,
@@ -17,8 +17,27 @@ import {
   Search,
   Star,
 } from "lucide-react";
-import type { AnalysisResult, AuditIssue, ChunkCitation, FixExample, PassedCheck } from "@/lib/analysisTypes";
-import { computeSimulatedScores } from "@/lib/simulationScore";
+import type {
+  AnalysisResult,
+  AuditIssue,
+  ChunkCitation,
+  FixExample,
+  GeoIssue,
+  PassedCheck,
+} from "@/lib/analysisTypes";
+import { dedupeGeoIssuesById } from "@/lib/geoExplain/issueEngine";
+import { GEO_UI_HIDE_COVERAGE_AND_PPT } from "../geoUiFlags";
+import {
+  GEO_AXIS_LABEL,
+  getAxisRows,
+  getIssueCategoryLabel,
+  getStrengthRows,
+  groupGeoIssuesByCategory,
+  hasGeoExplain,
+  IMPACT_LABEL,
+  EDITORIAL_SUBTYPE_LABEL,
+  editorialSubtypeTooltip,
+} from "../utils/geoExplainUi";
 import ScoreGauge, { getGradeInfo } from "./ScoreGauge";
 
 const PRIORITY_COLORS: Record<string, { color: string; bg: string; border: string; label: string }> = {
@@ -26,6 +45,166 @@ const PRIORITY_COLORS: Record<string, { color: string; bg: string; border: strin
   medium: { color: "#f5a623", bg: "rgba(245,166,35,0.08)", border: "rgba(245,166,35,0.25)", label: "보통" },
   low: { color: "#34d399", bg: "rgba(52,211,153,0.08)", border: "rgba(52,211,153,0.25)", label: "낮음" },
 };
+
+function GeoIssueCard({
+  g,
+  issueNum,
+  activeIssueId,
+  onIssueClick,
+  auditIssueById,
+  showDebugRefs,
+  hideCategoryBadge,
+}: {
+  g: GeoIssue;
+  issueNum: number;
+  activeIssueId: string | null;
+  onIssueClick: (id: string) => void;
+  auditIssueById: (id: string) => AuditIssue | undefined;
+  showDebugRefs: boolean;
+  hideCategoryBadge?: boolean;
+}) {
+  const cfg = PRIORITY_COLORS[g.severity];
+  const isActive = activeIssueId === g.id;
+  const linked = auditIssueById(g.id);
+  const fixExamples = linked?.fixExamples;
+  const hasFixExamples = Boolean(fixExamples && fixExamples.length > 0);
+  const showFixPanel = isActive && (hasFixExamples || Boolean(g.fix?.trim()));
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <button
+        onClick={() => onIssueClick(g.id)}
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 10,
+          padding: "10px 12px",
+          borderRadius: showFixPanel ? "8px 8px 0 0" : 8,
+          borderTop: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+          borderRight: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+          borderLeft: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+          borderBottom: showFixPanel ? "none" : `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+          background: isActive ? cfg.bg : "transparent",
+          cursor: "pointer",
+          textAlign: "left",
+          transition: "all 0.15s",
+          width: "100%",
+        }}
+      >
+        <span
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: "50%",
+            background: cfg.color,
+            color: "#fff",
+            fontSize: 12,
+            fontWeight: 800,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+            marginTop: 1,
+            fontFamily: "var(--font-mono)",
+            boxShadow: isActive ? `0 0 8px ${cfg.color}66` : "none",
+          }}
+          title={PRIORITY_COLORS[g.severity]?.label ?? g.severity}
+        >
+          {issueNum}
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginBottom: 3 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: "#e8edf5", lineHeight: 1.3 }}>{g.label}</span>
+            {!hideCategoryBadge && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: "#1a2436",
+                  color: "#8b9cb3",
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {getIssueCategoryLabel(g.category)}
+              </span>
+            )}
+            <span
+              style={{
+                fontSize: 10,
+                padding: "2px 6px",
+                borderRadius: 4,
+                background: "rgba(91,110,245,0.12)",
+                color: "#a5b4fc",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {GEO_AXIS_LABEL[g.axis] ?? g.axis}
+            </span>
+            {(hasFixExamples || g.fix?.trim()) &&
+              (isActive ? <ChevronUp size={14} style={{ color: "#5b6ef5", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />)}
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "#8b9cb3",
+              lineHeight: 1.5,
+              display: isActive ? "block" : "-webkit-box",
+              WebkitLineClamp: isActive ? undefined : 2,
+              WebkitBoxOrient: "vertical",
+              overflow: isActive ? "visible" : "hidden",
+            }}
+          >
+            {g.description}
+          </div>
+        </div>
+      </button>
+      {isActive && showFixPanel && (
+        <div
+          style={{
+            border: `1px solid ${cfg.color}66`,
+            borderTop: `1px dashed ${cfg.color}33`,
+            borderRadius: "0 0 8px 8px",
+            background: "#080d16",
+            overflow: "hidden",
+          }}
+        >
+          {g.fix?.trim() && (
+            <div style={{ padding: "10px 12px", borderBottom: hasFixExamples ? "1px solid #1a2436" : "none" }}>
+              <div style={{ fontSize: 11, color: "#5b6ef5", fontFamily: "var(--font-mono)", fontWeight: 600, marginBottom: 6 }}>수정 가이드</div>
+              <div style={{ fontSize: 12, color: "#c4d0e0", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{g.fix}</div>
+            </div>
+          )}
+          {hasFixExamples && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px", borderBottom: "1px solid #1a2436" }}>
+                <span style={{ fontSize: 12, color: "#5b6ef5", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.05em" }}>수정 예시</span>
+              </div>
+              {fixExamples!.map((fix, fidx) => (
+                <FixCodeBlock key={`${g.id}-fix-${fidx}`} fix={fix} accentColor={cfg.color} />
+              ))}
+            </>
+          )}
+          {showDebugRefs && g.sourceRefs && Object.keys(g.sourceRefs).length > 0 && (
+            <pre
+              style={{
+                margin: 0,
+                padding: "8px 12px",
+                fontSize: 10,
+                color: "#6d8099",
+                fontFamily: "var(--font-mono)",
+                borderTop: "1px solid #1a2436",
+                overflow: "auto",
+                maxHeight: 120,
+              }}
+            >
+              {JSON.stringify(g.sourceRefs, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function FixCodeBlock({ fix, accentColor }: { fix: FixExample; accentColor: string }) {
   const [copied, setCopied] = useState(false);
@@ -162,6 +341,36 @@ function getDomainFromUrl(url?: string): string | null {
   }
 }
 
+/** Shown in header: which GEO scoring profile was applied (page type). */
+function pageEvalStandard(pageType?: AnalysisResult["pageType"]) {
+  switch (pageType) {
+    case "video":
+      return {
+        title: "유튜브 · 비디오",
+        hint: "제목·설명·챕터 등 메타 중심 평가",
+        color: "#f472b6",
+      };
+    case "commerce":
+      return {
+        title: "쇼핑몰 · 커머스",
+        hint: "상품·스펙·스키마·신뢰 신호 중심 평가",
+        color: "#f5a623",
+      };
+    case "editorial":
+      return {
+        title: "일반 사이트 · 에디토리얼",
+        hint: "본문·인용·구조·답변 적합성 중심 평가",
+        color: "#00d4c8",
+      };
+    default:
+      return {
+        title: "일반(기본)",
+        hint: "에디토리얼에 가까운 기준으로 평가",
+        color: "#5b6ef5",
+      };
+  }
+}
+
 interface AuditPanelProps {
   result: AnalysisResult;
   issues: AuditIssue[];
@@ -175,8 +384,6 @@ interface AuditPanelProps {
   onPassedCheckClick?: (pc: PassedCheck) => void;
   exporting: boolean;
   reanalyzing?: boolean;
-  includeSimulatedInExport?: boolean;
-  onIncludeSimulatedInExportChange?: (v: boolean) => void;
 }
 
 const CATEGORY_ICONS: Record<string, ReactNode> = {
@@ -284,8 +491,6 @@ export default function AuditPanel({
   onReset,
   onExportPPT,
   onNavigate,
-  includeSimulatedInExport = false,
-  onIncludeSimulatedInExportChange,
   onQuestionClick,
   onPassedCheckClick,
   exporting,
@@ -297,29 +502,73 @@ export default function AuditPanel({
   const [expandedPassedId, setExpandedPassedId] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState(result.url);
   const [questionsExpanded, setQuestionsExpanded] = useState(false);
-  const [isSimulated, setIsSimulated] = useState(false);
+  const [opportunitiesOpen, setOpportunitiesOpen] = useState(true);
 
-  const simulatedScores = useMemo(
-    () => computeSimulatedScores(result, issues),
-    [result, issues]
-  );
-  const displayScores = isSimulated ? simulatedScores : result.scores;
-  const displayResult = isSimulated ? { ...result, scores: simulatedScores } : result;
-  const scoreDiff = simulatedScores.finalScore - result.scores.finalScore;
+  const [configVersion, setConfigVersion] = useState<string | null>(null);
+  const [configCreatedAt, setConfigCreatedAt] = useState<string | null>(null);
+  const [configDaysLeft, setConfigDaysLeft] = useState<number | null>(null);
+
+  // Fetch latest active AI config metadata for badge display
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch('/api/geo-config/update', { signal: controller.signal });
+        if (!mountedRef.current) return;
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data?.version) setConfigVersion(String(data.version));
+        if (data?.created_at) setConfigCreatedAt(String(data.created_at));
+        if (typeof data?.days_until_next_update === 'number') setConfigDaysLeft(data.days_until_next_update);
+      } catch {
+        // silent
+      }
+    })();
+    return () => {
+      mountedRef.current = false;
+      controller.abort();
+    };
+  }, []);
 
   const goldenParagraphs = (result.chunkCitations ?? [])
     .slice()
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
-  const gi = getGradeInfo(displayScores.finalScore);
-  const categories = buildCategories(displayResult);
+  const gi = getGradeInfo(result.scores.finalScore);
+  const categories = buildCategories(result);
 
-  const filtered = filter === "all" ? issues : issues.filter((i) => i.priority === filter);
-  const counts = {
-    high: issues.filter((i) => i.priority === "high").length,
-    medium: issues.filter((i) => i.priority === "medium").length,
-    low: issues.filter((i) => i.priority === "low").length,
-  };
+  const geo = hasGeoExplain(result);
+  const geoExplain = result.geoExplain;
+  const useGeoIssueList = Boolean(geo && geoExplain && geoExplain.issues.length > 0);
+  const geoIssues: GeoIssue[] = useGeoIssueList ? dedupeGeoIssuesById(geoExplain!.issues) : [];
+
+  const filteredGeoIssues =
+    filter === "all" ? geoIssues : geoIssues.filter((i) => i.severity === filter);
+  const filteredLegacyIssues = filter === "all" ? issues : issues.filter((i) => i.priority === filter);
+  const filtered = useGeoIssueList ? filteredGeoIssues : filteredLegacyIssues;
+
+  const issueCounts = useGeoIssueList
+    ? {
+        high: geoIssues.filter((i) => i.severity === "high").length,
+        medium: geoIssues.filter((i) => i.severity === "medium").length,
+        low: geoIssues.filter((i) => i.severity === "low").length,
+      }
+    : {
+        high: issues.filter((i) => i.priority === "high").length,
+        medium: issues.filter((i) => i.priority === "medium").length,
+        low: issues.filter((i) => i.priority === "low").length,
+      };
+
+  const strengthRows = getStrengthRows(result, passedChecks);
+  const axisRows = getAxisRows(result);
+  const opportunities = geoExplain?.opportunities ?? [];
+  const showDebugRefs = typeof process !== "undefined" && process.env.NODE_ENV === "development";
+
+  const auditIssueById = (id: string) => issues.find((i) => i.id === id);
+
+  const geoIssueGroups = useGeoIssueList ? groupGeoIssuesByCategory(filteredGeoIssues) : [];
 
   return (
     <aside
@@ -342,6 +591,14 @@ export default function AuditPanel({
             <span style={{ fontSize: 12, color: "#818cf8", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
               GEO Analyzer
             </span>
+              {configVersion ? (
+                <span style={{ fontSize: 11, color: "#7a8da3", marginLeft: 8 }}>
+                  Scored using Monthly AI GEO Criteria (Updated {configCreatedAt ? new Date(configCreatedAt).toISOString().slice(0,10).replace(/-/g,'.') : configVersion})
+                  {configDaysLeft != null ? ` · ${configDaysLeft}d left` : ''}
+                </span>
+              ) : (
+                <span style={{ fontSize: 11, color: "#7a8da3", marginLeft: 8 }}>Scoring Engine: v26.03 Commerce Update</span>
+              )}
           </div>
           <button
             onClick={onReset}
@@ -415,6 +672,44 @@ export default function AuditPanel({
             분석
           </button>
         </form>
+        {(() => {
+          const ev = pageEvalStandard(result.pageType);
+          return (
+            <>
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: `1px solid ${ev.color}44`,
+                  background: `${ev.color}10`,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{
+                  display:"flex",
+                  alignItems:"center",
+                  gap: 8,
+                  flexWrap: "wrap",
+                }}>
+                  <span style={{ fontSize: 10, color: "#6d8099", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                    평가 기준
+                  </span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: ev.color, fontFamily: "var(--font-body)" }}>{ev.title}</span>
+                  {result.pageType === "editorial" && result.editorialSubtype && (
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#a8c4e8", fontFamily: "var(--font-body)" }}>
+                      ({EDITORIAL_SUBTYPE_LABEL[result.editorialSubtype]})
+                    </span>
+                  )}
+                </div>
+                <span style={{ fontSize: 11, color: "#8b9cb3", flex: 1, minWidth: 140 }}>{ev.hint}</span>
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       {/* 스크롤 영역 — 카드 레이아웃, gap-y-6 */}
@@ -453,17 +748,39 @@ export default function AuditPanel({
           </div>
         </div>
       )}
+      {/* 제한된 분석 알림 (예: WAF/Access Denied, 짧은 HTML 등) */}
+      {result.limitedAnalysis && (
+        <div
+          style={{
+            ...CARD_STYLE,
+            background: "rgba(245,245,245,0.03)",
+            border: "1px solid rgba(196,208,224,0.04)",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 6, color: "#f5a623" }}>
+            제한된 분석 — 일부 데이터가 수집되지 않았습니다
+          </div>
+          <div style={{ color: "#8b9cb3", fontSize: 12, lineHeight: 1.5 }}>
+            {result.limitedReason === 'short_html' && '수집된 HTML이 매우 짧아(또는 빈 응답) 페이지의 주요 콘텐츠를 분석할 수 없습니다.'}
+            {result.limitedReason === 'site_protection' && '웹방화벽 또는 접근제한으로 인해 페이지 본문이 반환되지 않았습니다 (Access Denied / Captcha).'}
+            {!result.limitedReason && '페이지가 부분적으로 로드되었거나 보호되어 분석이 제한되었습니다.'}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 11, color: "#6d8099" }}>
+            이 경우 프록시/헤드리스 등의 우회 시도는 Phase 2로 보관되어 있으며, 현재는 안전한 화이트리스트 폴백을 사용합니다.
+          </div>
+        </div>
+      )}
 
-      {/* 1. 점수 + 제언 적용 예상 + 시뮬레이션 버튼 (한 박스) */}
+      {/* 1. 종합 GEO 점수 */}
       <div style={CARD_STYLE}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 14 }}>
-          <ScoreGauge score={displayScores.finalScore} size={100} strokeWidth={8} />
+          <ScoreGauge score={result.scores.finalScore} size={100} strokeWidth={8} />
           <div style={{ textAlign: "center", marginTop: 4 }}>
             <div style={{ fontSize: 11, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}>
-              {isSimulated ? "개선 후 예상" : "종합 GEO 점수"}
+              종합 GEO 점수
             </div>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 4 }}>
-              <span style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 800, color: gi.color }}>{displayScores.finalScore}</span>
+              <span style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 800, color: gi.color }}>{result.scores.finalScore}</span>
               <span style={{ fontSize: 12, color: "#7a8da3" }}>/ 100</span>
             </div>
             <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 99, background: `${gi.color}18`, border: `1px solid ${gi.color}44`, color: gi.color, fontWeight: 600, display: "inline-block", marginTop: 4 }}>
@@ -489,96 +806,152 @@ export default function AuditPanel({
             );
           })}
         </div>
+      </div>
 
-        {isSimulated && scoreDiff > 0 && (
-          <div
-            style={{
-              marginBottom: 12,
-              padding: "10px 12px",
-              borderRadius: 8,
-              background: "linear-gradient(135deg, rgba(52,211,153,0.12) 0%, rgba(0,212,200,0.08) 100%)",
-              border: "1px solid rgba(52,211,153,0.3)",
-            }}
-          >
-            <div style={{ fontSize: 12, color: "#34d399", fontWeight: 700, marginBottom: 8, fontFamily: "var(--font-body)" }}>
-              제언 적용 시 GEO 점수 {scoreDiff}점 상승 예상
+      {/* 2. 축 점수 (0–100, GEO Explain) */}
+      {axisRows.length > 0 && (
+        <div style={CARD_STYLE}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
+            축 점수 (0–100)
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 12px" }}>
+            {axisRows.map((row) => (
+              <div key={row.key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "#c4d0e0", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.label}</span>
+                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: "#5b6ef5", flexShrink: 0 }}>{row.value}</span>
+                </div>
+                <div style={{ height: 4, background: "#1e2d45", borderRadius: 99, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${row.value}%`, background: "linear-gradient(90deg, #5b6ef5, #00d4c8)", borderRadius: 99, transition: "width 0.6s" }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 3. 잘된 점 / Strengths */}
+      <div style={CARD_STYLE}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "#34d399", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              잘된 점 {strengthRows.length > 0 ? `(${strengthRows.length})` : ""}
+            </span>
+            {geo && geoExplain && geoExplain.passed.length > 0 && (
+              <span style={{ fontSize: 10, color: "#10b981", fontFamily: "var(--font-mono)" }}>GEO</span>
+            )}
+          </div>
+        </div>
+
+        {strengthRows.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#7a8da3", padding: "8px 4px" }}>
+            No strong GEO signals were detected yet.
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {(strengthRows.slice(0, passedOpen ? strengthRows.length : Math.min(5, strengthRows.length))).map((row) => {
+                const legacyPc = passedChecks.find((p) => p.id === row.id);
+                const isGeoStrength = Boolean(geo && geoExplain && geoExplain.passed.some((p) => p.id === row.id));
+                const isExpanded = expandedPassedId === row.id;
+                return (
+                  <button
+                    key={row.id}
+                    onClick={() => {
+                      setExpandedPassedId(isExpanded ? null : row.id);
+                      if (legacyPc?.position && onPassedCheckClick) onPassedCheckClick(legacyPc);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      border: `1px solid ${isExpanded ? "rgba(52,211,153,0.4)" : "rgba(52,211,153,0.06)"}`,
+                      background: isExpanded ? "rgba(52,211,153,0.04)" : "transparent",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      transition: "all 0.15s",
+                      width: "100%",
+                    }}
+                  >
+                    <span
+                      title={isGeoStrength ? "GEO Explain — passed signal" : undefined}
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: "50%",
+                        background: isGeoStrength ? "rgba(52,211,153,0.18)" : "rgba(99,102,241,0.06)",
+                        color: isGeoStrength ? "#10b981" : "#7a8da3",
+                        fontSize: 12,
+                        fontWeight: 800,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        marginTop: 1,
+                      }}
+                    >
+                      {isGeoStrength ? "G" : <Check size={12} strokeWidth={3} style={{ color: "inherit" }} />}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: isExpanded ? 6 : 0 }}>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: "#c4d0e0", lineHeight: 1.3 }}>{row.label}</span>
+                        {isExpanded ? <ChevronUp size={14} style={{ color: "#34d399", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />}
+                        {isGeoStrength && (
+                          <span style={{ fontSize: 11, color: "#10b981", fontWeight: 700, marginLeft: "auto", fontFamily: "var(--font-mono)" }}>GEO</span>
+                        )}
+                      </div>
+                      {isExpanded && (
+                        <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.6, borderTop: "1px dashed rgba(52,211,153,0.12)", paddingTop: 6, marginTop: 4 }}>
+                          {row.description && row.description !== row.label && (
+                            <div style={{ marginBottom: row.reason ? 8 : 0, color: "#a8b8cc" }}>{row.description}</div>
+                          )}
+                          {row.reason}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
-            {result.chunkCitations && result.chunkCitations.length > 0 && (
-              <div style={{ fontSize: 11, color: "#7a8da3", marginBottom: 8, lineHeight: 1.5 }}>
-                AI 인용 점수를 에이스 문단 수준으로 개선했다고 가정합니다.
+
+            {strengthRows.length > 5 && (
+              <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => setPassedOpen((v) => !v)}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 8,
+                    border: "1px solid #1e2d45",
+                    background: "transparent",
+                    color: "#00d4c8",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  {passedOpen ? "View Less" : `View More (${strengthRows.length - 5})`}
+                </button>
               </div>
             )}
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
-              <span style={{ fontSize: 11, color: "#7a8da3" }}>현재</span>
-              <div style={{ flex: 1, height: 6, background: "#1e2d45", borderRadius: 99, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${result.scores.finalScore}%`, background: "#5b6ef5", borderRadius: 99, transition: "width 1s" }} />
-              </div>
-              <span style={{ fontSize: 11, color: "#8b9cb3", fontFamily: "var(--font-mono)", minWidth: 28 }}>{result.scores.finalScore}</span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 11, color: "#34d399" }}>개선 후</span>
-              <div style={{ flex: 1, height: 6, background: "#1e2d45", borderRadius: 99, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${displayScores.finalScore}%`, background: "linear-gradient(90deg, #34d399, #00d4c8)", borderRadius: 99, transition: "width 1.2s" }} />
-              </div>
-              <span style={{ fontSize: 11, color: "#34d399", fontFamily: "var(--font-mono)", fontWeight: 700, minWidth: 28 }}>{displayScores.finalScore}</span>
-            </div>
-          </div>
-        )}
-
-        {!isSimulated ? (
-          <button
-            type="button"
-            onClick={() => setIsSimulated(true)}
-            style={{
-              width: "100%",
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "1px solid rgba(251,191,36,0.4)",
-              background: "linear-gradient(135deg, rgba(251,191,36,0.15) 0%, rgba(251,191,36,0.06) 100%)",
-              color: "#fbbf24",
-              fontSize: 12,
-              fontWeight: 700,
-              cursor: "pointer",
-              fontFamily: "var(--font-body)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-              transition: "all 0.2s",
-            }}
-          >
-            ✨ 개선안 적용 시 예상 점수 보기
-          </button>
-        ) : (
-          <button
-              type="button"
-              onClick={() => setIsSimulated(false)}
-              style={{
-                width: "100%",
-                padding: "8px 14px",
-                borderRadius: 8,
-                border: "1px solid #1e2d45",
-                background: "transparent",
-                color: "#7a8da3",
-                fontSize: 11,
-                cursor: "pointer",
-                fontFamily: "var(--font-mono)",
-                transition: "all 0.2s",
-              }}
-            >
-              시뮬레이션 종료
-            </button>
+          </>
         )}
       </div>
 
-      {/* 발견된 이슈 */}
+      {/* 4. 발견된 이슈 */}
       <div style={CARD_STYLE}>
         <div style={{ fontSize: 12, fontWeight: 600, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
-          발견된 이슈 ({issues.length})
+          발견된 이슈 ({useGeoIssueList ? geoIssues.length : issues.length})
+          {useGeoIssueList && <span style={{ marginLeft: 8, fontSize: 10, color: "#5b6ef5" }}>GEO</span>}
         </div>
         <div style={{ display: "flex", gap: 4 }}>
           {(["all", "high", "medium", "low"] as const).map((f) => {
-            const cfg = f === "all" ? { label: `전체 ${issues.length}`, color: "#8b9cb3" } : { label: `${PRIORITY_COLORS[f].label} ${counts[f]}`, color: PRIORITY_COLORS[f].color };
+            const cfg =
+              f === "all"
+                ? { label: `전체 ${useGeoIssueList ? geoIssues.length : issues.length}`, color: "#8b9cb3" }
+                : { label: `${PRIORITY_COLORS[f].label} ${issueCounts[f]}`, color: PRIORITY_COLORS[f].color };
             const active = filter === f;
             return (
               <button
@@ -603,131 +976,186 @@ export default function AuditPanel({
           })}
         </div>
         <div style={{ marginTop: 10 }}>
-        {filtered.length === 0 && (
-          <div style={{ textAlign: "center", color: "#7a8da3", fontSize: 14, marginTop: 24 }}>
-            해당 이슈 없음
-          </div>
-        )}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {filtered.map((issue) => {
-            const cfg = PRIORITY_COLORS[issue.priority];
-            const isActive = activeIssueId === issue.id;
-            const hasFixExamples = issue.fixExamples && issue.fixExamples.length > 0;
-            return (
-              <div key={issue.id} style={{ display: "flex", flexDirection: "column" }}>
-                <button
-                  onClick={() => onIssueClick(issue.id)}
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 10,
-                    padding: "10px 12px",
-                    borderRadius: isActive && hasFixExamples ? "8px 8px 0 0" : 8,
-                    borderTop: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
-                    borderRight: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
-                    borderLeft: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
-                    borderBottom: isActive && hasFixExamples ? "none" : `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
-                    background: isActive ? cfg.bg : "transparent",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    transition: "all 0.15s",
-                    width: "100%",
-                  }}
-                >
-                  <span style={{ width: 24, height: 24, borderRadius: "50%", background: cfg.color, color: "#fff", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1, fontFamily: "var(--font-mono)", boxShadow: isActive ? `0 0 8px ${cfg.color}66` : "none" }}>
-                    {issue.number}
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: "#e8edf5", lineHeight: 1.3 }}>{issue.label}</span>
-                      {hasFixExamples && (isActive ? <ChevronUp size={14} style={{ color: "#5b6ef5", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />)}
+          {filtered.length === 0 && (
+            <div style={{ textAlign: "center", color: "#7a8da3", fontSize: 14, marginTop: 24 }}>
+              해당 이슈 없음
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {useGeoIssueList ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+                {geoIssueGroups.map((group) => (
+                  <div key={group.category} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: "#a8b4c8",
+                        fontFamily: "var(--font-mono)",
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        padding: "4px 2px 0",
+                        borderBottom: "1px solid #1e2d45",
+                        paddingBottom: 6,
+                      }}
+                    >
+                      {getIssueCategoryLabel(group.category)}
                     </div>
-                    <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.5, display: isActive ? "block" : "-webkit-box", WebkitLineClamp: isActive ? undefined : 2, WebkitBoxOrient: "vertical", overflow: isActive ? "visible" : "hidden" }}>
-                      {issue.description}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {group.issues.map((g) => (
+                        <GeoIssueCard
+                          key={g.id}
+                          g={g}
+                          issueNum={geoIssues.findIndex((x) => x.id === g.id) + 1}
+                          activeIssueId={activeIssueId}
+                          onIssueClick={onIssueClick}
+                          auditIssueById={auditIssueById}
+                          showDebugRefs={showDebugRefs}
+                          hideCategoryBadge
+                        />
+                      ))}
                     </div>
                   </div>
-                </button>
-                {isActive && hasFixExamples && (
-                  <div style={{ border: `1px solid ${cfg.color}66`, borderTop: `1px dashed ${cfg.color}33`, borderRadius: "0 0 8px 8px", background: "#080d16", overflow: "hidden" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px", borderBottom: "1px solid #1a2436" }}>
-                      <span style={{ fontSize: 12, color: "#5b6ef5", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.05em" }}>수정 예시</span>
-                    </div>
-                    {issue.fixExamples!.map((fix, idx) => (
-                      <FixCodeBlock key={idx} fix={fix} accentColor={cfg.color} />
-                    ))}
-                  </div>
-                )}
+                ))}
               </div>
-            );
-          })}
-        </div>
+            ) : (
+              (filtered as AuditIssue[]).map((issue) => {
+                  const cfg = PRIORITY_COLORS[issue.priority];
+                  const isActive = activeIssueId === issue.id;
+                  const hasFixExamples = issue.fixExamples && issue.fixExamples.length > 0;
+                  return (
+                    <div key={issue.id} style={{ display: "flex", flexDirection: "column" }}>
+                      <button
+                        onClick={() => onIssueClick(issue.id)}
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 10,
+                          padding: "10px 12px",
+                          borderRadius: isActive && hasFixExamples ? "8px 8px 0 0" : 8,
+                          borderTop: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+                          borderRight: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+                          borderLeft: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+                          borderBottom: isActive && hasFixExamples ? "none" : `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+                          background: isActive ? cfg.bg : "transparent",
+                          cursor: "pointer",
+                          textAlign: "left",
+                          transition: "all 0.15s",
+                          width: "100%",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 24,
+                            height: 24,
+                            borderRadius: "50%",
+                            background: cfg.color,
+                            color: "#fff",
+                            fontSize: 12,
+                            fontWeight: 800,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            flexShrink: 0,
+                            marginTop: 1,
+                            fontFamily: "var(--font-mono)",
+                            boxShadow: isActive ? `0 0 8px ${cfg.color}66` : "none",
+                          }}
+                        >
+                          {issue.number}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                            <span style={{ fontSize: 14, fontWeight: 600, color: "#e8edf5", lineHeight: 1.3 }}>{issue.label}</span>
+                            {hasFixExamples && (isActive ? <ChevronUp size={14} style={{ color: "#5b6ef5", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />)}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: "#8b9cb3",
+                              lineHeight: 1.5,
+                              display: isActive ? "block" : "-webkit-box",
+                              WebkitLineClamp: isActive ? undefined : 2,
+                              WebkitBoxOrient: "vertical",
+                              overflow: isActive ? "visible" : "hidden",
+                            }}
+                          >
+                            {issue.description}
+                          </div>
+                        </div>
+                      </button>
+                      {isActive && hasFixExamples && (
+                        <div style={{ border: `1px solid ${cfg.color}66`, borderTop: `1px dashed ${cfg.color}33`, borderRadius: "0 0 8px 8px", background: "#080d16", overflow: "hidden" }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px", borderBottom: "1px solid #1a2436" }}>
+                            <span style={{ fontSize: 12, color: "#5b6ef5", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.05em" }}>수정 예시</span>
+                          </div>
+                          {issue.fixExamples!.map((fix, fidx) => (
+                            <FixCodeBlock key={`${issue.id}-fix-${fidx}`} fix={fix} accentColor={cfg.color} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+            )}
+          </div>
         </div>
       </div>
 
-      {/* 잘된점 */}
-      {passedChecks.length > 0 && (
+      {/* 5. 개선 기회 / Opportunities */}
+      {opportunities.length > 0 && (
         <div style={CARD_STYLE}>
           <button
-            onClick={() => setPassedOpen((v) => !v)}
+            type="button"
+            onClick={() => setOpportunitiesOpen((v) => !v)}
             style={{
               width: "100%",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              padding: "10px 16px",
               background: "transparent",
               border: "none",
+              padding: 0,
               cursor: "pointer",
-              textAlign: "left",
+              marginBottom: opportunitiesOpen ? 10 : 0,
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 12, color: "#34d399", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                잘된 점 ({passedChecks.length})
-              </span>
-            </div>
-            {passedOpen ? <ChevronUp size={16} style={{ color: "#34d399" }} /> : <ChevronDown size={16} style={{ color: "#7a8da3" }} />}
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              개선 기회 ({opportunities.length})
+            </span>
+            {opportunitiesOpen ? <ChevronUp size={16} color="#7a8da3" /> : <ChevronDown size={16} color="#7a8da3" />}
           </button>
-          {passedOpen && (
-            <div style={{ padding: "0 12px 10px", display: "flex", flexDirection: "column", gap: 4 }}>
-              {passedChecks.map((pc) => {
-                const isExpanded = expandedPassedId === pc.id;
+          {opportunitiesOpen && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {opportunities.map((opp) => {
+                const imp = PRIORITY_COLORS[opp.impact];
                 return (
-                  <button
-                    key={pc.id}
-                    onClick={() => {
-                      setExpandedPassedId(isExpanded ? null : pc.id);
-                      if (pc.position && onPassedCheckClick) onPassedCheckClick(pc);
-                    }}
+                  <div
+                    key={opp.id}
                     style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 8,
-                      padding: "8px 10px",
+                      padding: "10px 12px",
                       borderRadius: 8,
-                      border: `1px solid ${isExpanded ? "rgba(52,211,153,0.4)" : "rgba(52,211,153,0.15)"}`,
-                      background: isExpanded ? "rgba(52,211,153,0.06)" : "transparent",
-                      cursor: "pointer",
-                      textAlign: "left",
-                      transition: "all 0.15s",
-                      width: "100%",
+                      border: `1px solid ${imp.border}`,
+                      background: "rgba(0,212,200,0.04)",
                     }}
                   >
-                    <span style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(52,211,153,0.15)", color: "#34d399", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
-                      <Check size={12} strokeWidth={3} style={{ color: "inherit" }} />
-                    </span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: isExpanded ? 4 : 0 }}>
-                        <span style={{ fontSize: 14, fontWeight: 600, color: "#c4d0e0", lineHeight: 1.3 }}>{pc.label}</span>
-                        {isExpanded ? <ChevronUp size={14} style={{ color: "#34d399", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />}
-                      </div>
-                      {isExpanded && (
-                        <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.6, borderTop: "1px dashed rgba(52,211,153,0.2)", paddingTop: 4, marginTop: 2 }}>
-                          {pc.reason}
-                        </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "#e8edf5" }}>{opp.title}</span>
+                      <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: imp.bg, color: imp.color, fontFamily: "var(--font-mono)" }}>
+                        {IMPACT_LABEL[opp.impact] ?? opp.impact}
+                      </span>
+                      <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(91,110,245,0.12)", color: "#a5b4fc", fontFamily: "var(--font-mono)" }}>
+                        {GEO_AXIS_LABEL[opp.improvesAxis] ?? opp.improvesAxis}
+                      </span>
+                      {opp.fixesIssueId && (
+                        <span style={{ fontSize: 10, color: "#7a8da3", fontFamily: "var(--font-mono)" }}>↳ 이슈 {opp.fixesIssueId}</span>
                       )}
                     </div>
-                  </button>
+                    <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55 }}>{opp.rationale}</div>
+                    {showDebugRefs && opp.sourceRefs && Object.keys(opp.sourceRefs).length > 0 && (
+                      <pre style={{ margin: "8px 0 0", fontSize: 10, color: "#6d8099", fontFamily: "var(--font-mono)" }}>{JSON.stringify(opp.sourceRefs, null, 2)}</pre>
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -735,7 +1163,7 @@ export default function AuditPanel({
         </div>
       )}
 
-      {/* AI 전략 제언 */}
+      {/* 6. AI 전략 제언 — 서술 레이어 (구조화 기회 보강) */}
       {result.recommendations && (
         <div
           style={{
@@ -744,10 +1172,16 @@ export default function AuditPanel({
             border: "1px solid rgba(99,102,241,0.35)",
           }}
         >
+          {opportunities.length > 0 && (
+            <div style={{ fontSize: 11, color: "#a5b4fc", lineHeight: 1.5, marginBottom: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
+              위의 <strong style={{ color: "#e8edf5" }}>개선 기회</strong>가 우선입니다. 아래는 Gemini가 같은 맥락에서 다듬은 설명·템플릿입니다.
+            </div>
+          )}
+          여기다
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
             <Sparkles size={18} style={{ color: "#818cf8" }} />
             <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
-              AI 전략 제언: 커뮤니티가 원하는 정답
+              {result.pageType === "video" ? "AI 검색 최적화 설명란 전략" : result.pageType === "editorial" && result.reviewLike ? "리뷰 분석 제언" : "AI 전략 제언: 커뮤니티가 원하는 정답"}
             </span>
             {result.recommendations.isTemplateFallback && (
               <span style={{ padding: "2px 8px", borderRadius: 4, background: "rgba(245,166,35,0.2)", border: "1px solid rgba(245,166,35,0.5)", color: "#f5a623", fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
@@ -759,21 +1193,44 @@ export default function AuditPanel({
             {result.recommendations.trendSummary}
           </div>
           <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.6, marginBottom: 12, paddingLeft: 8, borderLeft: "2px solid #1e2d45" }}>
-            <div style={{ fontWeight: 600, color: "#7a8da3", marginBottom: 4 }}>콘텐츠 Gap</div>
+            <div style={{ fontWeight: 600, color: "#7a8da3", marginBottom: 4 }}>{result.pageType === "video" ? "설명란 보강 포인트" : "콘텐츠 Gap"}</div>
             {result.recommendations.contentGapSummary}
           </div>
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#818cf8", marginBottom: 6 }}>추천 H2/H3 제목</div>
-            <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
-              <CopyableBlock>{result.recommendations.actionPlan.suggestedHeadings.join("\n")}</CopyableBlock>
-            </div>
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", marginBottom: 6 }}>추천 블록 (테이블/리스트/FAQ)</div>
-            <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,200,0.06)", border: "1px solid rgba(0,212,200,0.2)" }}>
-              <CopyableBlock>{result.recommendations.actionPlan.suggestedBlocks.join("\n")}</CopyableBlock>
-            </div>
-          </div>
+          {result.pageType === "video" ? (
+            <>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#7a8da3", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>콘텐츠 구조 (Content Structure)</div>
+                <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
+                  <CopyableBlock>{result.recommendations.actionPlan.suggestedHeadings.join("\n")}</CopyableBlock>
+                </div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#7a8da3", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>메타데이터·링크 (Metadata / Links)</div>
+                <div style={{ fontSize: 11, color: "#8b9cb3", lineHeight: 1.5, marginBottom: 8 }}>고정 댓글에 핵심 요약 배치, 관련 링크 정리</div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#7a8da3", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>복사용 템플릿 (Copy-paste Templates)</div>
+                <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,200,0.06)", border: "1px solid rgba(0,212,200,0.2)" }}>
+                  <CopyableBlock>{result.recommendations.actionPlan.suggestedBlocks.join("\n\n")}</CopyableBlock>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#818cf8", marginBottom: 6 }}>추천 H2/H3 제목</div>
+                <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
+                  <CopyableBlock>{result.recommendations.actionPlan.suggestedHeadings.join("\n")}</CopyableBlock>
+                </div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", marginBottom: 6 }}>추천 블록 (테이블/리스트/FAQ)</div>
+                <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,200,0.06)", border: "1px solid rgba(0,212,200,0.2)" }}>
+                  <CopyableBlock>{result.recommendations.actionPlan.suggestedBlocks.join("\n")}</CopyableBlock>
+                </div>
+              </div>
+            </>
+          )}
           {result.recommendations.actionPlan.priorityNotes && result.recommendations.actionPlan.priorityNotes.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
               {result.recommendations.actionPlan.priorityNotes.map((note, i) => (
@@ -817,17 +1274,15 @@ export default function AuditPanel({
           {goldenOpen && (
             <div style={{ paddingTop: 8, display: "flex", flexDirection: "column", gap: 10 }}>
               {goldenParagraphs.map((chunk, idx) => (
-                <GoldenParagraphCard key={chunk.index} chunk={chunk} rank={idx + 1} />
+                <GoldenParagraphCard key={`gold-${idx}`} chunk={chunk} rank={idx + 1} />
               ))}
             </div>
           )}
         </div>
       )}
 
-      {/* 4. 커버리지 그룹 */}
-      {/* 질문 커버리지 카드 */}
-      {((result.searchQuestions && result.searchQuestions.length > 0) || (result.recommendations?.predictedQuestions && result.recommendations.predictedQuestions.length > 0)) && (
-        <div style={CARD_STYLE}>
+      {/* 4. 커버리지 그룹 — optional hide (geoUiFlags) */}
+      <div style={CARD_STYLE}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <Search size={18} style={{ color: "#00d4c8" }} />
             <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
@@ -866,6 +1321,14 @@ export default function AuditPanel({
                 });
                 const visibleCount = questionsExpanded ? all.length : Math.min(INITIAL_QUESTIONS, all.length);
                 const visible = all.slice(0, visibleCount);
+
+                if (all.length === 0) {
+                  return (
+                    <li style={{ padding: "12px 10px", fontSize: 12, color: "#7a8da3", fontStyle: "italic" }}>
+                      수집된 질문 없음
+                    </li>
+                  );
+                }
 
                 return visible.map((item) => {
                   const isUncovered = item.type === "user" ? !item.isCovered : !item.isCovered;
@@ -958,24 +1421,11 @@ export default function AuditPanel({
               </button>
             )
           )}
-        </div>
-      )}
-
+      </div>
       </div>
 
-      {/* PPT 버튼 - 하단 고정 (항상 actualResult 사용, 시뮬레이션은 부록 옵션) */}
+      {/* PPT 버튼 - 하단 고정 — optional hide (geoUiFlags) */}
       <div style={{ padding: "10px 12px 16px", borderTop: "1px solid #1e2d45" }}>
-        {onIncludeSimulatedInExportChange && (
-          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer", fontSize: 12, color: "#8b9cb3", fontFamily: "var(--font-body)" }}>
-            <input
-              type="checkbox"
-              checked={includeSimulatedInExport}
-              onChange={(e) => onIncludeSimulatedInExportChange(e.target.checked)}
-              style={{ accentColor: "#5b6ef5" }}
-            />
-            예상 점수 포함 (부록 슬라이드 1장 추가)
-          </label>
-        )}
         <button
           onClick={onExportPPT}
           disabled={exporting}

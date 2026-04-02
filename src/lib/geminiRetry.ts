@@ -7,7 +7,7 @@
 /** 배치 크기 — Paid Tier 업그레이드 시 3~5로 상향 */
 export const GEMINI_BATCH_SIZE = 1;
 /** 배치/재시도 간 지연(ms) — Paid Tier 업그레이드 시 300~400으로 축소 */
-export const GEMINI_RETRY_DELAY = 1000;
+export const GEMINI_RETRY_DELAY = 5000;
 
 import { isQuotaError, extractRetryAfterSeconds, setLlmCooldown } from './llmError';
 import type { LlmFeature } from './analysisTypes';
@@ -66,44 +66,36 @@ export async function withGeminiRetry<T>(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      // Mandatory cool-down before each Gemini call to respect free-tier RPM limits.
+      await new Promise((res) => setTimeout(res, 5000));
       const data = await fn();
       return { ok: true, data };
     } catch (err) {
       lastErr = err;
-
-      if (isQuotaDisabled429(err)) {
+      // If this is any quota/rate-limit (429) situation, do not retry here.
+      if (isQuotaError(err)) {
         const retryAfterSec = extractRetryAfterSeconds(err) ?? 60;
+        // Set short cooldown so subsequent analyses skip Gemini briefly.
         setLlmCooldown(retryAfterSec);
-        console.warn(`[GEMINI] ${feature} quota-disabled 429 — no retry`, { retryAfterSec });
+        console.warn(`[GEMINI] ${feature} quota/rate-limit detected — skip retries and set cooldown ${retryAfterSec}s`);
         return {
           ok: false,
           status: 'skipped_quota',
           retryAfterSec,
-          message: '현재 Gemini 무료 쿼터가 비활성화되어 AI 기능이 제한됩니다. 결제/쿼터 설정을 확인해주세요.',
+          message: undefined,
         };
       }
 
-      if (isRateLimit429(err) && attempt < maxRetries) {
-        const retryAfterSec = extractRetryAfterSeconds(err);
-        const delayMs = retryAfterSec != null
-          ? retryAfterSec * 1000
-          : BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
-        console.warn(`[GEMINI] ${feature} rate-limit 429 — retry ${attempt + 1}/${maxRetries} in ${delayMs}ms`);
+      // For non-quota transient errors, allow retry with backoff.
+      if (attempt < maxRetries) {
+        const delayMs = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
+        console.warn(`[GEMINI] ${feature} transient error — retry ${attempt + 1}/${maxRetries} in ${delayMs}ms`, {
+          err: lastErr,
+        });
         await sleep(delayMs);
         continue;
       }
-
-      if (isQuotaError(err)) {
-        const retryAfterSec = extractRetryAfterSeconds(err);
-        if (retryAfterSec != null) setLlmCooldown(retryAfterSec);
-        return {
-          ok: false,
-          status: 'skipped_quota',
-          retryAfterSec: retryAfterSec ?? undefined,
-          message: '요청이 많아 잠시 후 다시 시도해주세요.',
-        };
-      }
-
+      // Exhausted retries for transient errors; break and return error.
       break;
     }
   }

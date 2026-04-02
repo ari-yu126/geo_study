@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { AnalysisResult, AuditIssue, IframePositionData, PassedCheck } from "@/lib/analysisTypes";
-import { computeSimulatedScores } from "@/lib/simulationScore";
 import { toEmbedUrl } from "@/lib/youtubeMetadataExtractor";
 import { deriveAuditIssues } from "@/lib/issueDetector";
 import AuditPanel from "./components/AuditPanel";
 import AuditMarker from "./components/AuditMarker";
+import { GEO_UI_HIDE_COVERAGE_AND_PPT } from "./geoUiFlags";
 
 type Status = "idle" | "loading" | "success" | "error";
 
@@ -38,7 +38,6 @@ export default function Home() {
 
   const [positionData, setPositionData] = useState<IframePositionData | null>(null);
   const [issues, setIssues] = useState<AuditIssue[]>([]);
-  const [includeSimulatedInExport, setIncludeSimulatedInExport] = useState(false);
   const [passedChecks, setPassedChecks] = useState<PassedCheck[]>([]);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   const [iframeScrollTop, setIframeScrollTop] = useState(0);
@@ -348,11 +347,7 @@ export default function Home() {
     setExporting(true);
     try {
       const { exportToPPT } = await import("./utils/pptExporter");
-      const actualResult = result;
-      const options = includeSimulatedInExport
-        ? { simulatedScores: computeSimulatedScores(actualResult, issues) }
-        : undefined;
-      await exportToPPT(actualResult, options);
+      await exportToPPT(result);
     } catch (e) {
       alert("PPT 생성 오류: " + (e as Error).message);
     } finally {
@@ -373,8 +368,6 @@ export default function Home() {
           onIssueClick={handleIssueClick}
           onReset={handleReset}
           onExportPPT={handleExportPPT}
-          includeSimulatedInExport={includeSimulatedInExport}
-          onIncludeSimulatedInExportChange={setIncludeSimulatedInExport}
           onNavigate={(newUrl) => runAnalyze(newUrl)}
           onQuestionClick={handleQuestionClick}
           onPassedCheckClick={handlePassedCheckClick}
@@ -664,7 +657,7 @@ export default function Home() {
             { icon: "🔍", label: "사이트 오버레이" },
             { icon: "❓", label: "이슈 마커" },
             { icon: "💡", label: "개선 가이드" },
-            { icon: "📊", label: "PPT 리포트" },
+            ...(GEO_UI_HIDE_COVERAGE_AND_PPT ? [] : [{ icon: "📊", label: "PPT 리포트" }]),
           ].map((f) => (
             <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", borderRadius: 99, background: "rgba(15,22,35,0.6)", border: "1px solid #1e2d45", fontSize: 14, color: "#8b9cb3" }}>
               {f.icon} {f.label}

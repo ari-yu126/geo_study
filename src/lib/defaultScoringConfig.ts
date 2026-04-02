@@ -189,4 +189,31 @@ export const DEFAULT_SCORING_CONFIG: GeoScoringConfig = {
   ],
 
   youtubePassedCheckRules: DEFAULT_YOUTUBE_PASSED_CHECK_RULES,
+  youtubeAllowedIssueIds: ['title', 'desc', 'og', 'canonical'],
+  commerceDomains: [
+    'coupang.com',
+    'amazon.',
+    'gmarket.co.kr',
+    '11st.co.kr',
+    'auction.co.kr',
+    'danawa.com',
+    // Phase 1 operational fallbacks for known hard-to-crawl malls
+    'lotteimall.com',
+    'zara.com',
+    'ssg.com',
+    'walmart.com',
+  ],
+  profiles: {
+    // Commerce profile: prioritize structure and product/schema signals, de-emphasize editorial text rules
+    commerce: {
+      // v26.03 Commerce Update — prioritize data density / structure / trust
+      weights: {
+        dataDensity: 0.4,
+        structure: 0.3,
+        trust: 0.3,
+      },
+      issueRules: [],
+      queryTemplates: [],
+    },
+  },
 };

@@ -1,12 +1,18 @@
-import { geminiFlash } from './geminiClient';
+import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
 import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
 import { withGeminiRetry } from './geminiRetry';
 import type {
   SearchQuestion,
   AuditIssue,
+  EditorialSubtype,
+  GeoAxisScores,
+  GeoIssue,
+  GeoOpportunity,
   GeoRecommendations,
   GeoPredictedQuestion,
+  PageType,
 } from './analysisTypes';
+import { refineGeminiEditorialTrendSummary } from './geoExplain/editorialSubtypeWording';
 
 export type GeoRecommendationsResult = GeoRecommendations | null | { error: 'quota_exceeded'; retryAfterSec?: number; message?: string };
 
@@ -33,6 +39,14 @@ export async function generateGeoRecommendations(
   options?: {
     searchQuestions?: SearchQuestion[];
     pageQuestions?: string[];
+    pageType?: PageType;
+    /** Editorial-only: tone/context for narrative — does not affect scoring */
+    editorialSubtype?: EditorialSubtype;
+    pageSignals?: Record<string, unknown>;
+    /** Stable opportunity ids — LLM narrative should align, not contradict */
+    geoOpportunities?: GeoOpportunity[];
+    geoIssues?: GeoIssue[];
+    axisScores?: GeoAxisScores;
   }
 ): Promise<GeoRecommendationsResult> {
   if (!geminiFlash) {
@@ -47,6 +61,9 @@ export async function generateGeoRecommendations(
 
   const searchQuestions = options?.searchQuestions ?? [];
   const pageQuestions = options?.pageQuestions ?? [];
+  const pageType = options?.pageType ?? 'editorial';
+  const editorialSubtype = options?.editorialSubtype;
+  const pageSignals = options?.pageSignals ?? {};
 
   const questionsText =
     uncoveredQuestions.length > 0
@@ -68,147 +85,282 @@ export async function generateGeoRecommendations(
       ? pageQuestions.map((q) => `- ${q}`).join('\n')
       : '(페이지 내 질문 없음)';
 
-  const prompt1 = `너는 GEO/AI Overview 관점에서 콘텐츠 전략을 제안하는 컨설턴트다.
+  const isVideo = pageType === 'video';
 
-입력 데이터:
-1) 아직 페이지가 답하지 못한 사용자 질문 목록 (커뮤니티/검색 기반):
-${questionsText}
+  // Detect review vs listicle signals to prefer single-review structures.
+  const hasReviewSchema = (pageSignals && typeof (pageSignals as Record<string, any>).hasReviewSchema === 'boolean')
+    ? (pageSignals as Record<string, any>).hasReviewSchema
+    : false;
+  const reviewLikeSignal = (pageSignals && typeof (pageSignals as Record<string, any>).reviewLike === 'boolean')
+    ? (pageSignals as Record<string, any>).reviewLike
+    : false;
+  // repeatedProductCardCount may live on pageSignals.contentQuality or at top-level; normalize defensively.
+  const repeatedProductCardCount = (pageSignals && typeof (pageSignals as Record<string, any>).repeatedProductCardCount === 'number')
+    ? (pageSignals as Record<string, any>).repeatedProductCardCount
+    : (pageSignals && typeof (pageSignals as Record<string, any>).contentQuality === 'object' && typeof (pageSignals as Record<string, any>).contentQuality.repeatedProductCardCount === 'number')
+    ? (pageSignals as Record<string, any>).contentQuality.repeatedProductCardCount
+    : 0;
+  const listCountSignal = (pageSignals && typeof (pageSignals as Record<string, any>).listCount === 'number')
+    ? (pageSignals as Record<string, any>).listCount
+    : undefined;
+  const isListicle = repeatedProductCardCount > 1 || (typeof listCountSignal === 'number' && listCountSignal > 3);
+  const isSingleProductReview = pageType === 'editorial' && (hasReviewSchema || reviewLikeSignal) && !isListicle;
 
-2) 현재 페이지의 이슈 목록:
-${issuesText}
+  const editorialTonePrefix =
+    pageType === 'editorial' && editorialSubtype
+      ? editorialSubtype === 'blog'
+        ? '[Context: reader-facing article / blog — emphasize byline, quotable excerpts, clear takeaways] '
+        : editorialSubtype === 'site_info'
+        ? '[Context: corporate / help / policy-style page — emphasize scannable structure, official tone, policy clarity] '
+        : '[Context: mixed article + site signals — balance narrative clarity with documentation structure] '
+      : '';
 
-위 입력을 바탕으로, GEO 점수와 AI 검색 노출을 높이기 위한 맞춤형 추천을 해줘.
+  // Build a local recommendation skeleton first to avoid unnecessary Gemini calls.
+  const localRecommendations: GeoRecommendations = {
+    trendSummary:
+      editorialTonePrefix +
+      (uncoveredQuestions.length > 0
+        ? 'Detected unanswered user questions; prioritize clear answers and FAQs.'
+        : 'No major uncovered user questions detected; prioritize structural clarity.'),
+    contentGapSummary:
+      currentIssues.length > 0
+        ? `Detected ${currentIssues.length} issues that reduce content quality; address high-priority issues first.`
+        : '(No severe issues detected)',
+    actionPlan: {
+      suggestedHeadings: pageType === 'video'
+        ? ['Pinned summary', 'Chapters / Timestamps', 'FAQ']
+        : pageType === 'commerce'
+        ? ['Price & Offer', 'Structured Spec Table', 'Shipping / Returns / Warranty']
+        : isSingleProductReview
+        ? ['Pros / Cons', 'Best for / Not for (user segments)', 'Final verdict — one-paragraph']
+        : ['추가할 H2 제목 예시', '요약 섹션', 'FAQ'],
+      suggestedBlocks: pageType === 'video'
+        ? ['Pinned one-paragraph summary + 2 bullets', 'Chapter example: 0:00 Intro / 02:15 Key / 05:00 Summary', 'FAQ short items']
+        : pageType === 'commerce'
+        ? ['Spec table template: Model | KeySpec | Value', 'Policy block: shipping / returns / warranty bullets', 'FAQ purchase questions']
+        : isSingleProductReview
+        ? ['Pros / Cons summary block', 'Best-for segmentation bullets', 'Final verdict (1 paragraph)']
+        : ['Data comparison table', 'How-to steps', 'FAQ'],
+      priorityNotes:
+        uncoveredQuestions.length > 0
+          ? ['Answer uncovered questions via FAQ (high priority)', 'Add early summary / key takeaways']
+          : ['Improve structure and add clear headings'],
+    },
+  };
 
-출력은 반드시 아래 JSON 스키마만 지켜서, 마크다운/코드블록/설명 없이 순수 JSON만 반환해.
+  // Helper to safely read pageSignals (typed)
+  const getSignal = <T,>(key: string): T | undefined => {
+    if (!pageSignals || typeof pageSignals !== 'object') return undefined;
+    const v = (pageSignals as Record<string, unknown>)[key];
+    return v as T | undefined;
+  };
+
+  // Detect topic from signals (prefer explicit detectedTopic, fall back to meta.title)
+  const detectedTopic = getSignal<string>('detectedTopic') ?? getSignal<Record<string, unknown>>('meta')?.title ?? getSignal<string>('topic') ?? getSignal<string>('detectedTitle') ?? null;
+
+  // Helper to inject detectedTopic into text (mandatory when present)
+  const injectTopic = (t: string) => (detectedTopic ? `${t} — ${String(detectedTopic)}` : t);
+
+  // If there are no uncoveredQuestions, switch to AI citation optimization mode:
+  // - generate intent-based questions and prioritize advanced GEO strategies.
+  if (uncoveredQuestions.length === 0) {
+    // Intent-based questions examples (intent, not user-sourced)
+    const intentQuestions = [
+      `How does ${detectedTopic ?? 'this topic'} compare to alternatives?`,
+      `When should one choose option A over B for ${detectedTopic ?? 'this topic'}?`,
+      `What are common edge cases or pitfalls with ${detectedTopic ?? 'this topic'}?`,
+    ];
+
+    // Overwrite suggestedHeadings/Blocks with advanced GEO strategies, injecting topic.
+    if (isSingleProductReview) {
+      // For single-product reviews, prefer decision-support structures over full comparison tables.
+      localRecommendations.actionPlan.suggestedHeadings = [
+        injectTopic('Pros / Cons summary'),
+        injectTopic('Best for / Not for (user segments)'),
+        injectTopic('Final verdict — one-paragraph'),
+      ];
+      localRecommendations.actionPlan.suggestedBlocks = [
+        injectTopic('Pros / Cons bullet block'),
+        injectTopic('Best-for segmentation bullets: - Best for X: ... - Not for Y: ...'),
+        injectTopic('Final verdict (concise 1-paragraph conclusion)'),
+        injectTopic('Pseudo-comparison: vs typical product / category average (no multi-product table)'),
+      ];
+      localRecommendations.actionPlan.priorityNotes = [
+        'Prioritize concise decision-support blocks (pros/cons, best-for, final verdict).',
+        'If comparisons are needed, use pseudo-comparisons (vs typical product or category average) rather than full multi-product tables.',
+        'Ensure summary blocks are machine-extractable (short bullets / single-paragraph verdict).',
+      ];
+    } else {
+      localRecommendations.actionPlan.suggestedHeadings = [
+        injectTopic('Structured comparison summary'),
+        injectTopic('Best for: user segments / scenarios'),
+        injectTopic('Quick extraction: key specs & takeaways'),
+      ];
+      localRecommendations.actionPlan.suggestedBlocks = [
+        injectTopic('Comparison table template: Feature | Option A | Option B | Recommendation'),
+        injectTopic('Best-for categorization bullets: - Best for X: ... - Best for Y: ...'),
+        injectTopic('Extraction block (key metrics table / 3-line summary)'),
+      ];
+      localRecommendations.actionPlan.priorityNotes = [
+        'Prioritize structured comparison summaries and extraction blocks (high ROI for AI citation).',
+        'Add "best for X" categorizations to improve user intent matching.',
+        'Ensure headline/spec blocks are machine-extractable (tables, bullets).',
+      ];
+    }
+
+    // Expose generated intent-questions as predictedQuestions fallback for UI/LLM usage
+    (localRecommendations as unknown as Record<string, unknown>).generatedIntentQuestions = intentQuestions;
+  }
+
+  // Decide whether to skip Gemini for low-value cases.
+  const structureScore = typeof pageSignals.structureScore === 'number' ? (pageSignals.structureScore as number) : undefined;
+  const descriptionLength = typeof pageSignals.descriptionLength === 'number' ? (pageSignals.descriptionLength as number) : undefined;
+  const limitedAnalysisFlag = Boolean(pageSignals.limitedAnalysis);
+
+  const shouldSkipGemini =
+    isLlmCooldown() ||
+    limitedAnalysisFlag ||
+    (typeof descriptionLength === 'number' && descriptionLength < 50) ||
+    (typeof structureScore === 'number' && structureScore < 30) ||
+    (uncoveredQuestions.length === 0 && currentIssues.length === 0);
+
+  if (shouldSkipGemini) {
+    // Mark as template fallback if we skipped model phrasing.
+    localRecommendations.isTemplateFallback = true;
+    return localRecommendations;
+  }
+
+  // Build a single structured prompt for Gemini to perform phrasing/prioritization only.
+  const stableOpportunities = (options?.geoOpportunities ?? []).slice(0, 24).map((o) => ({
+    id: o.id,
+    improvesAxis: o.improvesAxis,
+    fixesIssueId: o.fixesIssueId ?? null,
+    impact: o.impact,
+    title: o.title,
+    rationale: o.rationale,
+  }));
+
+  const internalContext = {
+    pageType,
+    editorialSubtype: pageType === 'editorial' ? editorialSubtype ?? null : null,
+    pageSignals,
+    uncoveredQuestions: uncoveredQuestions.map((q) => q.text),
+    currentIssues: currentIssues.map((i) => ({ id: i.id, priority: i.priority, label: i.label })),
+    geoIssueIds: (options?.geoIssues ?? []).map((i) => i.id),
+    axisScores: options?.axisScores ?? null,
+    stableOpportunities,
+    internalRecommendations: localRecommendations,
+  };
+
+  const policyNote =
+    'Follow our internal GEO scoring policy v26.03. This policy prioritizes Information Gain, structured spec tables, clear FAQ blocks, and trust-oriented content structure. Do not claim this is an external industry standard.';
+
+  const singlePrompt = `You are a GEO recommendations assistant. Use the provided structured CONTEXT (JSON) to rephrase and prioritize the internal recommendations.
+Only use the signals included in CONTEXT to justify reasons. Do NOT invent unsupported signals.
+
+CONTEXT:
+${JSON.stringify(internalContext, null, 2)}
+
+INSTRUCTIONS:
+- Follow the internal policy note exactly: ${policyNote}
+- Narrative enrichment only: align recommendations with CONTEXT.stableOpportunities (use their id/title/rationale/axis). Do NOT invent unrelated priority themes that ignore stableOpportunities or axisScores.
+- Be page-type aware:
+  - For "commerce": focus on "Conversion via Trust" (price transparency, structured spec tables, FAQ blocks, shipping/returns/warranty clarity).
+  - For "video": focus on "Knowledge Base Formation" (chapter markers, pinned summary, FAQ in description, concise key takeaway).
+  - For "editorial" with CONTEXT.editorialSubtype "blog": align phrasing with independent publishing (voice, sourcing, dated narrative) without claiming it changes scores.
+  - For "editorial" with CONTEXT.editorialSubtype "site_info": align phrasing with official documentation (policies, help, service facts) without claiming it changes scores.
+  - For "editorial" with CONTEXT.editorialSubtype "mixed": use neutral language that does not assume only one format.
+- If authority signals (e.g., subscriberCount, viewCount, hasDomainAuthority) are high but structure/data density is weak, recommend "Data Enrichment" and tie that to the specific weak signals.
+- For each recommendation, explicitly list which signal(s) from CONTEXT justify it.
+- You MUST return strict JSON only, matching this schema exactly (no markdown, no extra text):
 
 {
-  "trendSummary": "커뮤니티(디시, 펨코 등)에서 어떤 키워드/관심 포인트가 많은지 1~2문장 요약",
-  "contentGapSummary": "현재 사이트가 어떤 관점/데이터가 부족한지 1~2문장 요약",
-  "actionPlan": {
-    "suggestedHeadings": ["추가할 H2/H3 제목 1", "추가할 H2/H3 제목 2"],
-    "suggestedBlocks": ["추가할 블록 예: 실제 온도별 시동 성공률 비교 테이블", "추가할 블록 예: 교체 주기별 예상 비용 리스트"],
-    "priorityNotes": ["우선순위/주의사항 1", "우선순위/주의사항 2"]
-  }
+  "strategySummary": "short 1-2 sentence summary",
+  "contentGap": "short 1-2 sentence description of primary content gap",
+  "recommendedHeadings": ["...","..."],
+  "copyPasteTemplates": ["...","..."],
+  "recommendations": [
+    {
+      "title": "...",
+      "reason": "... (must reference CONTEXT signals)",
+      "impact": "High|Medium|Low",
+      "relatedSignals": ["signalName1","signalName2"]
+    }
+  ]
 }
 
 JSON:`;
 
   try {
-    console.log('[GEMINI] generateGeoRecommendations call start', {
-      uncoveredCount: uncoveredQuestions.length,
-    });
-    const result1Wrap = await withGeminiRetry(
-      () => geminiFlash.generateContent([{ text: prompt1 }]),
-      { feature: 'recommendations', maxRetries: 3 }
+    const wrap = await withGeminiRetry(
+      () =>
+        traceGeminiGenerateContent('recommendationEngine', () =>
+          geminiFlash.generateContent([{ text: singlePrompt }])
+        ),
+      { feature: 'recommendations', maxRetries: 2 }
     );
-    if (!result1Wrap.ok) {
-      if (result1Wrap.status === 'skipped_quota') {
-        return { error: 'quota_exceeded', retryAfterSec: result1Wrap.retryAfterSec, message: result1Wrap.message };
+    if (!wrap.ok) {
+      if (wrap.status === 'skipped_quota') {
+        // Quota/rate-limit detected — return local fallback and mark cooldown.
+        localRecommendations.isTemplateFallback = true;
+        return localRecommendations;
       }
-      console.error('generateGeoRecommendations error:', result1Wrap.message);
-      return null;
-    }
-    const result1 = result1Wrap.data;
-    const raw1 = result1.response.text().trim();
-    const jsonStr1 = raw1
-      .replace(/^```json?\s*/i, '')
-      .replace(/\s*```\s*$/, '')
-      .trim();
-    const parsed1 = JSON.parse(jsonStr1) as GeoRecommendations;
-
-    if (!parsed1.trendSummary || !parsed1.contentGapSummary || !parsed1.actionPlan) {
-      console.error('Gemini response missing required fields');
-      return null;
+      console.error('generateGeoRecommendations error:', wrap.message);
+      return localRecommendations;
     }
 
-    const recommendations: GeoRecommendations = {
-      trendSummary: String(parsed1.trendSummary),
-      contentGapSummary: String(parsed1.contentGapSummary),
-      actionPlan: {
-        suggestedHeadings: Array.isArray(parsed1.actionPlan.suggestedHeadings)
-          ? parsed1.actionPlan.suggestedHeadings.map(String)
-          : [],
-        suggestedBlocks: Array.isArray(parsed1.actionPlan.suggestedBlocks)
-          ? parsed1.actionPlan.suggestedBlocks.map(String)
-          : [],
-        priorityNotes: Array.isArray(parsed1.actionPlan.priorityNotes)
-          ? parsed1.actionPlan.priorityNotes.map(String)
-          : undefined,
-      },
+    const result = wrap.data;
+    const raw = result.response.text().trim();
+    const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    const parsed = JSON.parse(jsonStr) as {
+      strategySummary?: string;
+      contentGap?: string;
+      recommendedHeadings?: unknown;
+      copyPasteTemplates?: unknown;
+      recommendations?: Array<Record<string, unknown>>;
     };
 
-    const prompt2 = `이 URL 주제에 대해 사용자가 실제로 던질 법한 질문 Top 5를 만들고,
-각 질문마다 왜 중요한지(중요도/리스크/전환율 관점 등)를 설명해줘.
-그리고 현재 페이지 본문과 질문 목록을 기준으로, 본문에 전혀 답이 없는 질문 Top3를 골라줘.
+    if (
+      typeof parsed.strategySummary === 'string' &&
+      typeof parsed.contentGap === 'string' &&
+      Array.isArray(parsed.recommendedHeadings) &&
+      Array.isArray(parsed.copyPasteTemplates) &&
+      Array.isArray(parsed.recommendations)
+    ) {
+      const final: GeoRecommendations & { _structuredRecommendations?: unknown } = {
+        trendSummary: parsed.strategySummary!,
+        contentGapSummary: parsed.contentGap!,
+        actionPlan: {
+          suggestedHeadings: (parsed.recommendedHeadings as unknown[]).map(String),
+          suggestedBlocks: (parsed.copyPasteTemplates as unknown[]).map(String),
+          priorityNotes: (Array.isArray(parsed.recommendations)
+            ? (parsed.recommendations as Array<Record<string, unknown>>)
+                .map((r) => {
+                  const title = typeof r.title === 'string' ? r.title : '';
+                  const impact = typeof r.impact === 'string' ? r.impact : '';
+                  const related = Array.isArray(r.relatedSignals) ? (r.relatedSignals as unknown[]).join(',') : '';
+                  return `${title} — ${impact} (${related})`;
+                })
+                .slice(0, 5)
+            : undefined) as string[] | undefined,
+        },
+        _structuredRecommendations: parsed.recommendations,
+      } as GeoRecommendations & { _structuredRecommendations?: unknown };
 
-입력:
-- 검색/커뮤니티에서 수집한 질문: ${searchQText}
-- 페이지 내 질문(H2 등): ${pageQText}
-- 아직 미답변 질문: ${questionsText}
-- 현재 이슈 요약: ${issuesText}
-
-출력은 반드시 아래 JSON만 반환해. 마크다운/코드블록/설명 없이 순수 JSON만.
-
-{
-  "predictedQuestions": [
-    {
-      "question": "질문 1",
-      "importanceReason": "왜 중요한지 (비즈니스/사용자 관점)",
-      "coveredByPage": true,
-      "isTopGap": false
-    }
-  ],
-  "predictedUncoveredTop3": [
-    {
-      "question": "본문에 없는 질문 1",
-      "importanceReason": "보강 시 기대 효과",
-      "coveredByPage": false,
-      "isTopGap": true
-    }
-  ]
-}
-
-predictedQuestions: Top 5. coveredByPage는 현재 페이지 본문/질문으로 어느 정도 답이 되는지. true=답함, false=미답.
-predictedUncoveredTop3: predictedQuestions 중 coveredByPage가 false인 것 중 Top3. isTopGap은 전부 true.
-
-JSON:`;
-
-    try {
-      const result2Wrap = await withGeminiRetry(
-        () => geminiFlash.generateContent([{ text: prompt2 }]),
-        { feature: 'recommendations', maxRetries: 2 }
-      );
-      if (!result2Wrap.ok) {
-        console.warn('generateGeoRecommendations: prompt2 skipped, using base recommendations');
-      } else {
-        const result2 = result2Wrap.data;
-        const raw2 = result2.response.text().trim();
-        const jsonStr2 = raw2
-          .replace(/^```json?\s*/i, '')
-          .replace(/\s*```\s*$/, '')
-          .trim();
-        const parsed2 = JSON.parse(jsonStr2) as {
-          predictedQuestions?: unknown;
-          predictedUncoveredTop3?: unknown;
-        };
-
-        const pq = parsePredictedQuestions(parsed2.predictedQuestions);
-        const top3 = parsePredictedQuestions(parsed2.predictedUncoveredTop3);
-
-        if (pq && pq.length > 0) {
-          recommendations.predictedQuestions = pq.slice(0, 5);
-        }
-        if (top3 && top3.length > 0) {
-          recommendations.predictedUncoveredTop3 = top3.slice(0, 3);
-        }
+      if (pageType === 'editorial' && editorialSubtype) {
+        final.trendSummary = refineGeminiEditorialTrendSummary(final.trendSummary, editorialSubtype);
       }
-    } catch (parseErr) {
-      console.warn('generateGeoRecommendations: predictedQuestions/Top3 parse failed', parseErr);
-    }
 
-    return recommendations;
+      return final;
+    } else {
+      console.warn('generateGeoRecommendations: gemini returned unexpected shape; using local fallback');
+      localRecommendations.isTemplateFallback = true;
+      return localRecommendations;
+    }
   } catch (err) {
     console.error('generateGeoRecommendations error:', err);
-    return null;
+    localRecommendations.isTemplateFallback = true;
+    return localRecommendations;
   }
+  // primary try/catch above handles errors and returns local fallback on failure.
 }

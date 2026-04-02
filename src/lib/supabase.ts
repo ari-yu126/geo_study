@@ -10,6 +10,12 @@ export const supabase = createClient(
 
 let _reachable: boolean | null = null;
 
+// Optional service-role client for server-side safe writes.
+// Provide SUPABASE_SERVICE_ROLE_KEY in deployment environment for admin writes.
+export const supabaseAdmin = process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(supabaseUrl || 'https://placeholder.supabase.co', process.env.SUPABASE_SERVICE_ROLE_KEY)
+  : null;
+
 export async function isSupabaseReachable(): Promise<boolean> {
   if (_reachable !== null) return _reachable;
   if (!supabaseUrl || !supabaseAnonKey) {

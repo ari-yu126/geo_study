@@ -1,0 +1,38 @@
+---
+description: GEO Analyzer system philosophy — monthly config, branch-based scoring, layered issues, AI citation focus
+alwaysApply: true
+---
+
+# GEO Analyzer — Architecture & Philosophy
+
+Full reference: `docs/geo-project-state/11-system-philosophy-and-architecture-rules.md`
+
+## Non-goals
+
+- Not a traditional SEO audit tool. This is an **AI citation / recommendation optimization** analyzer.
+
+## Configuration
+
+- **Primary:** active Supabase `geo_scoring_config`. **Fallback:** `DEFAULT_SCORING_CONFIG` from `src/lib/defaultScoringConfig.ts`.
+- System must stay stable when monthly config is incomplete.
+
+## Scoring
+
+- **No single fixed formula.** Branch-based pipeline: load config → page type → partial scores (citation, paragraph, answerability, structure, trust, question coverage/match) → page-type branch (web blend / commerce override / video pipeline) → authority / AI citation caps or boosts → `finalScore`.
+- Do not implement scoring as one static equation.
+
+## Issues
+
+- Layered model: `coreMinimumRules + pageTypeBaseRules + monthlyGeoIssueRules`. Monthly rules **extend**, do not replace core/page-type rules.
+- If monthly `issueRules` missing, use `DEFAULT_SCORING_CONFIG.issueRules`.
+
+## Product & UI
+
+- Explain strengths, gaps, weak signals, and actionable opportunities—not only errors.
+- Prioritize answerability, extractability, trust, citation likelihood.
+
+## GEO Score meaning
+
+> Likelihood that an AI system will select, summarize, or cite this page as an answer source.
+
+Pipeline mental model: `config → features → partial scores → branch → blend/override → finalScore → issues → recommendations → persistence`.

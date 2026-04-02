@@ -1,0 +1,5 @@
+# One URL per line. Lines starting with # are ignored.
+# Replace with 20–30 real URLs you want to audit.
+#
+# https://example.com/blog/sample-post
+# https://example.com/help/faq

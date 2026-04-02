@@ -2,6 +2,11 @@ import type { AnalysisMeta, SeedKeyword, SearchQuestion, SearchSource, PageType 
 
 const DEBUG_SEARCH_QUESTIONS = process.env.DEBUG_SEARCH_QUESTIONS === '1';
 
+// Developer/framework tokens to avoid when page is commerce
+const WEB_DEV_BLACKLIST = [
+  'next.js', 'nextjs', 'next', 'react', 'vercel', 'static site generation', 'static site', 'ssg', 'gatsby', 'nuxt', 'jekyll', 'hugo', 'cms'
+];
+
 /** primaryPhrase + essentialTokens: 모든 Tavily 쿼리와 필터에 사용 */
 export interface PrimaryTopic {
   primaryPhrase: string;
@@ -13,7 +18,8 @@ export interface PrimaryTopic {
 export function derivePrimaryTopic(
   meta: { title: string | null; ogTitle?: string | null },
   url: string,
-  seedKeywords: SeedKeyword[]
+  seedKeywords: SeedKeyword[],
+  pageType?: PageType
 ): PrimaryTopic {
   const tokenize = (s: string) =>
     s.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, ' ')
@@ -70,6 +76,40 @@ export function derivePrimaryTopic(
   const filteredEssential = isEnglishPage
     ? essentialTokens.filter((t) => !/[가-힣]/.test(t))
     : essentialTokens;
+
+  // Commerce-specific: avoid single-brand/domain tokens as primary.
+  // If we only detected a brand token (e.g., "ssg"), try to pair it with a product token from seed/title/slug.
+  if (pageType === 'commerce') {
+    try {
+      const hostRoot = new URL(url).hostname.toLowerCase().replace(/^www\./, '').split('.')[0];
+      // remove web-dev tokens from essentials
+      let fe = filteredEssential.filter((t) => !WEB_DEV_BLACKLIST.includes(t.toLowerCase()));
+      if (fe.length === 1 && hostRoot && fe[0] === hostRoot) {
+        // prefer seed keyword candidates, then title, then slug
+        const productCandidate =
+          kwTokens.find((t) => t !== hostRoot && !isGeneric(t) && t.length >= 3) ||
+          titleTokens.find((t) => t !== hostRoot && !isGeneric(t) && t.length >= 3) ||
+          slugTokens.find((t) => t !== hostRoot && !isGeneric(t) && t.length >= 3);
+        if (productCandidate) {
+          fe = [hostRoot, productCandidate];
+        }
+      }
+      // ensure at least one token remains
+      if (fe.length > 0) {
+        // limit to 5 tokens
+        while (fe.length > 5) fe.pop();
+      }
+      // assign back
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      // (preserve variable name expected by rest of function)
+      // @ts-ignore
+      filteredEssential.length = 0;
+      // copy
+      for (const t of fe) filteredEssential.push(t);
+    } catch {
+      // ignore
+    }
+  }
 
   // primaryPhrase: essential 2~4개 조합
   const phraseTokens = filteredEssential.slice(0, 4);
@@ -149,37 +189,31 @@ function resolveSource(url: string | undefined, fallback: SearchSource): SearchS
 /** 단점·비교·구매 팁 위주 쿼리 타입 */
 type QueryFocus = 'faq' | 'cons' | 'compare' | 'tips' | 'community';
 
-/** primaryPhrase 없으면 기존 방식 (호환) */
-function buildTavilyQuery(keyword: string, focus: QueryFocus): string {
-  switch (focus) {
-    case 'cons': return `${keyword} 단점 후기`;
-    case 'compare': return `${keyword} 비교 추천`;
-    case 'tips': return `${keyword} 구매 팁 구매가이드`;
-    case 'community': return `"${keyword}" 단점 OR 비교 site:dcinside.com OR site:fmkorea.com OR site:theqoo.net OR site:ruliweb.com`;
-    default: return `${keyword} 관련 자주 묻는 질문`;
-  }
-}
-
 /** 엄격: primaryPhrase 필수. generic 단어만으로는 쿼리 금지 */
-function buildTavilyQueryStrict(primaryPhrase: string, focus: QueryFocus, isEnglish: boolean): string {
+function buildTavilyQueryStrict(primaryPhrase: string, focus: QueryFocus, isEnglish: boolean, pageType?: PageType): string {
   const phrase = primaryPhrase.trim();
   if (!phrase) return '';
 
+  const WEB_DEV_NEGATIVE = [
+    'Next.js', 'Nextjs', 'next.js', 'nextjs', 'React', 'Vercel', 'Static Site Generation', 'SSG', 'Gatsby', 'Nuxt', 'Jekyll', 'Hugo', 'CMS'
+  ];
+  const negativeSuffix = pageType === 'commerce' ? ' ' + WEB_DEV_NEGATIVE.map((t) => `-${t}`).join(' ') : '';
+
   if (isEnglish) {
     switch (focus) {
-      case 'cons': return `"${phrase}" cons drawbacks review`;
-      case 'compare': return `"${phrase}" comparison best`;
-      case 'tips': return `"${phrase}" buying guide tips`;
-      case 'community': return `"${phrase}" reddit OR site:reddit.com`;
-      default: return `"${phrase}" FAQ questions`;
+      case 'cons': return `"${phrase}" cons drawbacks review` + negativeSuffix;
+      case 'compare': return `"${phrase}" comparison best` + negativeSuffix;
+      case 'tips': return `"${phrase}" buying guide tips` + negativeSuffix;
+      case 'community': return `"${phrase}" reddit OR site:reddit.com` + negativeSuffix;
+      default: return `"${phrase}" FAQ questions` + negativeSuffix;
     }
   }
   switch (focus) {
-    case 'cons': return `"${phrase}" 단점 후기`;
-    case 'compare': return `"${phrase}" 비교 추천`;
-    case 'tips': return `"${phrase}" 구매 팁`;
-    case 'community': return `"${phrase}" site:dcinside.com OR site:fmkorea.com OR site:theqoo.net OR site:reddit.com`;
-    default: return `"${phrase}" 자주 묻는 질문`;
+    case 'cons': return `"${phrase}" 단점 후기` + negativeSuffix;
+    case 'compare': return `"${phrase}" 비교 추천` + negativeSuffix;
+    case 'tips': return `"${phrase}" 구매 팁` + negativeSuffix;
+    case 'community': return `"${phrase}" site:dcinside.com OR site:fmkorea.com OR site:theqoo.net OR site:reddit.com` + negativeSuffix;
+    default: return `"${phrase}" 자주 묻는 질문` + negativeSuffix;
   }
 }
 
@@ -193,14 +227,15 @@ async function fetchFromTavilyStrict(
   primaryPhrase: string,
   source: SearchSource,
   queryFocus: QueryFocus,
-  isEnglish: boolean
+  isEnglish: boolean,
+  pageType?: PageType
 ): Promise<QuestionWithSnippet[]> {
   const apiKey = process.env.TAVILY_API_KEY;
-  const query = buildTavilyQueryStrict(primaryPhrase, queryFocus, isEnglish);
+  const query = buildTavilyQueryStrict(primaryPhrase, queryFocus, isEnglish, pageType);
   if (!query) return [];
 
   if (!apiKey) {
-    return generateFallbackQuestions(primaryPhrase, source).map((q) => ({ q, snippet: undefined }));
+    return generateFallbackQuestions(primaryPhrase, source, pageType).map((q) => ({ q, snippet: undefined }));
   }
 
   const isCommunity = source === 'community' || queryFocus === 'community';
@@ -223,16 +258,35 @@ async function fetchFromTavilyStrict(
     });
 
     if (!res.ok) {
-      return generateFallbackQuestions(primaryPhrase, source).map((q) => ({ q, snippet: undefined }));
+      return generateFallbackQuestions(primaryPhrase, source, pageType).map((q) => ({ q, snippet: undefined }));
     }
 
     const data = await res.json();
+    // snippet sanitization helper
+    const sanitizeSnippet = (s?: string, maxLen = 200) => {
+      if (!s) return undefined;
+      let t = String(s);
+      // remove code fences and inline code
+      t = t.replace(/```[\s\S]*?```/g, ' ');
+      t = t.replace(/`[^`]*`/g, ' ');
+      // remove HTML code tags
+      t = t.replace(/<code[\s\S]*?>[\s\S]*?<\/code>/gi, ' ');
+      // remove URLs
+      t = t.replace(/https?:\/\/\S+/gi, ' ');
+      // remove query-string heavy tokens
+      t = t.replace(/[\w-]+=[^&\s]+/g, ' ');
+      // remove excessive punctuation and normalize whitespace
+      t = t.replace(/[_\-\|]{2,}/g, ' ').replace(/[\t\n\r]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+      if (t.length > maxLen) t = t.slice(0, maxLen - 1).trim() + '…';
+      return t || undefined;
+    };
     const out: QuestionWithSnippet[] = [];
 
     if (data.answer) {
       const answerQuestions = extractQuestionCandidatesFromText(data.answer, source);
+      const short = sanitizeSnippet(data.answer, 200);
       for (const q of answerQuestions) {
-        out.push({ q, snippet: data.answer });
+        out.push({ q, snippet: short });
       }
     }
 
@@ -244,34 +298,53 @@ async function fetchFromTavilyStrict(
 
       const titleQuestionPattern = /\?|어떻게|무엇|왜|언제|방법|비용|추천|후기|단점|how|what|why|best|compare/i;
       if (titleQuestionPattern.test(title)) {
-        out.push({ q: { source: resolvedSource, text: title, url }, snippet: content });
+        out.push({ q: { source: resolvedSource, text: title, url }, snippet: sanitizeSnippet(content, 200) });
       }
 
       const contentQuestions = extractQuestionCandidatesFromText(content, resolvedSource, url);
       for (const q of contentQuestions) {
-        out.push({ q, snippet: content });
+        out.push({ q, snippet: sanitizeSnippet(content, 200) });
       }
     }
 
     if (out.length === 0) {
-      return generateFallbackQuestions(primaryPhrase, source).map((q) => ({ q, snippet: undefined }));
+      return generateFallbackQuestions(primaryPhrase, source, pageType).map((q) => ({ q, snippet: undefined }));
     }
     return out;
   } catch {
-    return generateFallbackQuestions(primaryPhrase, source).map((q) => ({ q, snippet: undefined }));
+    return generateFallbackQuestions(primaryPhrase, source, pageType).map((q) => ({ q, snippet: undefined }));
   }
 }
 
 function generateFallbackQuestions(
   keyword: string,
-  source: SearchSource
+  source: SearchSource,
+  pageType?: PageType
 ): SearchQuestion[] {
+  const k = keyword || '이 항목';
+  if (pageType === 'video') {
+    return [
+      { source, text: `"${k}" 요약은 무엇인가요?`, url: undefined },
+      { source, text: `"${k}" 볼 가치가 있나요?`, url: undefined },
+      { source, text: `"${k}"의 주요 핵심 내용은 무엇인가요?`, url: undefined },
+      { source, text: `"${k}"에서 추천하는 제품/주제는 무엇인가요?`, url: undefined },
+    ];
+  }
+  if (pageType === 'commerce') {
+    return [
+      { source, text: `${k}의 주요 스펙/사양은 무엇인가요?`, url: undefined },
+      { source, text: `${k} 배송/반품/AS 정책은 어떻게 되나요?`, url: undefined },
+      { source, text: `${k} 사용 시 주의할 점은 무엇인가요?`, url: undefined },
+      { source, text: `${k}의 장단점은 무엇인가요?`, url: undefined },
+      { source, text: `${k} 구매 전 비교 포인트는 무엇인가요?`, url: undefined },
+    ];
+  }
   return [
-    { source, text: `${keyword}는 어떻게 사용하나요?`, url: undefined },
-    { source, text: `${keyword} 비용은 얼마인가요?`, url: undefined },
-    { source, text: `${keyword} 선택 시 주의할 점은 무엇인가요?`, url: undefined },
-    { source, text: `${keyword}의 장단점은 무엇인가요?`, url: undefined },
-    { source, text: `${keyword} 관련 자주 묻는 질문은 무엇인가요?`, url: undefined },
+    { source, text: `${k}는 어떻게 사용하나요?`, url: undefined },
+    { source, text: `${k} 비용은 얼마인가요?`, url: undefined },
+    { source, text: `${k} 선택 시 주의할 점은 무엇인가요?`, url: undefined },
+    { source, text: `${k}의 장단점은 무엇인가요?`, url: undefined },
+    { source, text: `${k} 관련 자주 묻는 질문은 무엇인가요?`, url: undefined },
   ];
 }
 
@@ -292,11 +365,12 @@ const EXCLUDE_TOPIC_DOMAINS = ['italki.com'];
 function topicMatchFilter(
   items: QuestionWithSnippet[],
   essentialTokens: string[],
-  primaryPhrase: string
+  pageType?: PageType
 ): QuestionWithSnippet[] {
   const negSet = new Set(NEGATIVE_TOPIC_KEYWORDS.map((k) => k.toLowerCase()));
   const exclDomains = new Set(EXCLUDE_TOPIC_DOMAINS.map((d) => d.toLowerCase()));
   const essentialSet = new Set(essentialTokens.map((t) => t.toLowerCase()));
+  const webDevSet = new Set(WEB_DEV_BLACKLIST.map((k) => k.toLowerCase()));
 
   const hasEssential = (text: string, snippet?: string) => {
     const combined = ((text ?? '') + ' ' + (snippet ?? '')).toLowerCase();
@@ -311,6 +385,12 @@ function topicMatchFilter(
     for (const n of negSet) {
       if (combined.includes(n)) return true;
     }
+    // commerce pages: exclude developer/framework results
+    if (pageType === 'commerce') {
+      for (const w of webDevSet) {
+        if (combined.includes(w)) return true;
+      }
+    }
     return false;
   };
 
@@ -323,8 +403,13 @@ function topicMatchFilter(
         return '';
       }
     })() : '';
-    if (exclDomains.has(domain) || exclDomains.some((d) => domain.includes(d))) return false;
+    if (exclDomains.has(domain) || [...exclDomains].some((d) => domain.includes(d))) return false;
     if (hasNegative(q.text, snippet, url)) return false;
+    // commerce pages: aggressively drop code/implementation snippets
+    if (pageType === 'commerce' && snippet) {
+      const s = String(snippet);
+      if (/```|<code|npm install|package\.json|import\s+|export\s+|git clone|webpack|next\.js|react/i.test(s)) return false;
+    }
     if (essentialTokens.length > 0 && !hasEssential(q.text, snippet)) return false;
     if (domain.includes('reddit.com') && url.includes('/r/Korean') && essentialTokens.length > 0) {
       if (!hasEssential(q.text, snippet)) return false;
@@ -518,7 +603,7 @@ export async function fetchSearchQuestions(
     const meta = options?.meta ?? { title: null, ogTitle: null };
     const url = options?.url ?? '';
 
-    const topic = derivePrimaryTopic(meta, url, seedKeywords);
+    const topic = derivePrimaryTopic(meta, url, seedKeywords, options?.pageType);
     const { primaryPhrase, essentialTokens, isEnglishPage } = topic;
 
     if (!primaryPhrase || essentialTokens.length === 0) {
@@ -527,16 +612,16 @@ export async function fetchSearchQuestions(
     }
 
     const primaryTasks = [
-      fetchFromTavilyStrict(primaryPhrase, 'google', 'faq', isEnglishPage),
-      fetchFromTavilyStrict(primaryPhrase, 'google', 'cons', isEnglishPage),
-      fetchFromTavilyStrict(primaryPhrase, 'community', 'community', isEnglishPage),
+      fetchFromTavilyStrict(primaryPhrase, 'google', 'faq', isEnglishPage, options?.pageType),
+      fetchFromTavilyStrict(primaryPhrase, 'google', 'cons', isEnglishPage, options?.pageType),
+      fetchFromTavilyStrict(primaryPhrase, 'community', 'community', isEnglishPage, options?.pageType),
     ];
 
     const resultsArrays = await Promise.all(primaryTasks);
     let allWithSnippet: QuestionWithSnippet[] = resultsArrays.flat();
 
     const beforeTopic = allWithSnippet.length;
-    allWithSnippet = topicMatchFilter(allWithSnippet, essentialTokens, primaryPhrase);
+    allWithSnippet = topicMatchFilter(allWithSnippet, essentialTokens, options?.pageType);
     const afterTopic = allWithSnippet.length;
 
     const allQuestions = allWithSnippet.map(({ q }) => q);

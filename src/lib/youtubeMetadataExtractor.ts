@@ -65,8 +65,24 @@ export function isYouTubeUrl(url: string): boolean {
 export function extractVideoId(url: string): string | null {
   try {
     const u = new URL(url);
-    if (/youtube\.com$/i.test(u.hostname.replace(/^www\./, ''))) {
-      return u.searchParams.get('v');
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    // youtube.com watch?v=...
+    if (/^youtube\.com$/i.test(host) || host.endsWith('.youtube.com')) {
+      // /watch?v=... (standard)
+      const v = u.searchParams.get('v');
+      if (v) return v;
+      // /shorts/{id}
+      const parts = u.pathname.split('/').filter(Boolean);
+      const shortsIdx = parts.indexOf('shorts');
+      if (shortsIdx >= 0 && parts.length > shortsIdx + 1) {
+        return parts[shortsIdx + 1].split(/[?#]/)[0] || null;
+      }
+      // /embed/{id}
+      const embedIdx = parts.indexOf('embed');
+      if (embedIdx >= 0 && parts.length > embedIdx + 1) {
+        return parts[embedIdx + 1].split(/[?#]/)[0] || null;
+      }
+      return null;
     }
     if (/youtu\.be$/i.test(u.hostname)) {
       return u.pathname.slice(1).split(/[?/]/)[0] || null;

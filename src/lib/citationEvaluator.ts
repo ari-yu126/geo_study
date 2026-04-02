@@ -1,9 +1,10 @@
-import * as cheerio from 'cheerio';
 import type { ChunkCitation } from './analysisTypes';
 import { computeChunkInfoDensity } from './paragraphAnalyzer';
-import { geminiFlash } from './geminiClient';
+import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
 import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
 import { withGeminiRetry, GEMINI_BATCH_SIZE, GEMINI_RETRY_DELAY } from './geminiRetry';
+
+export { extractChunks } from './articleExtraction';
 
 let degradedMode = false;
 
@@ -11,67 +12,46 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-interface TextChunk {
-  index: number;
-  text: string;
-}
-
-export function extractChunks(html: string, maxChunks = 15): TextChunk[] {
-  const $ = cheerio.load(html);
-  $('script, style, noscript, nav, header, footer, iframe, svg').remove();
-
-  const chunks: TextChunk[] = [];
-  let idx = 0;
-
-  const selectors = 'main p, article p, .content p, #content p, [role="main"] p';
-  let elements = $(selectors).toArray();
-  if (elements.length < 3) {
-    elements = $('body p').toArray();
-  }
-
-  for (const el of elements) {
-    const text = $(el).text().trim();
-    if (text.length < 30) continue;
-    if (text.length > 800) {
-      chunks.push({ index: idx++, text: text.substring(0, 800) });
-    } else {
-      chunks.push({ index: idx++, text });
-    }
-    if (idx >= maxChunks) return chunks;
-  }
-
-  // 쇼핑/데이터형 페이지: p가 부족하면 li, td, 상품 카드에서 추출
-  if (chunks.length < 3) {
-    const dataSelectors = 'ul li, ol li, table td, table th, [class*="product"] li, [class*="item"] div, [class*="plan"] li, [class*="goods"]';
-    $(dataSelectors).each((_, el) => {
-      if (idx >= maxChunks) return false;
-      const text = $(el).text().trim();
-      if (text.length < 50) return;
-      if (/\d+[Aa][hH]|\d+[Vv]|[\d,]+\s*원|용량|저온시동|정격출력/.test(text)) {
-        chunks.push({ index: idx++, text: text.length > 600 ? text.substring(0, 600) : text });
-      }
-    });
-  }
-
-  return chunks;
-}
+/** Evaluate only top N chunks by infoDensity + length to reduce Gemini calls and avoid 429 */
+const TOP_CHUNKS_FOR_CITATIONS = 5;
 
 export interface EvaluateCitationsParams {
-  chunks: TextChunk[];
+  chunks: { index: number; text: string }[];
   searchQuestions: { text: string }[];
   isFaqLikePage?: boolean;
   hasActualAiCitation?: boolean;
 }
 
-export async function evaluateCitations(params: EvaluateCitationsParams): Promise<ChunkCitation[]> {
+export interface EvaluateCitationsResult {
+  citations: ChunkCitation[];
+  skippedQuota?: { retryAfterSec?: number; message?: string };
+}
+
+export async function evaluateCitations(params: EvaluateCitationsParams): Promise<EvaluateCitationsResult> {
   const { chunks, searchQuestions, isFaqLikePage = false, hasActualAiCitation = false } = params;
 
-  if (!geminiFlash || chunks.length === 0) return [];
+  if (!geminiFlash || chunks.length === 0) return { citations: [] };
+
   if (isLlmCooldown()) {
     const sec = getCooldownRemainingSec();
     console.warn('[GEMINI] cooldown active - skip citations', { retryAfterSec: sec });
-    throw new CitationQuotaSkipError(sec ?? undefined);
+    return {
+      citations: [],
+      skippedQuota: { retryAfterSec: sec ?? undefined, message: '요청이 많아 잠시 후 다시 시도해주세요.' },
+    };
   }
+
+  const chunksToUse =
+    chunks.length > TOP_CHUNKS_FOR_CITATIONS
+      ? [...chunks]
+          .map((c) => ({ chunk: c, density: computeChunkInfoDensity(c.text), len: c.text.length }))
+          .sort(
+            (a, b) =>
+              b.density * 100 + Math.min(b.len / 10, 50) - (a.density * 100 + Math.min(a.len / 10, 50))
+          )
+          .slice(0, TOP_CHUNKS_FOR_CITATIONS)
+          .map((x) => x.chunk)
+      : chunks;
 
   const questionList =
     searchQuestions.length > 0
@@ -80,9 +60,9 @@ export async function evaluateCitations(params: EvaluateCitationsParams): Promis
 
   const batchSize = GEMINI_BATCH_SIZE;
   const delayMs = degradedMode ? GEMINI_RETRY_DELAY * 1.5 : GEMINI_RETRY_DELAY;
-  const batches: TextChunk[][] = [];
-  for (let i = 0; i < chunks.length; i += batchSize) {
-    batches.push(chunks.slice(i, i + batchSize));
+  const batches: { index: number; text: string }[][] = [];
+  for (let i = 0; i < chunksToUse.length; i += batchSize) {
+    batches.push(chunksToUse.slice(i, i + batchSize));
   }
 
   const allResults: ChunkCitation[] = [];
@@ -135,19 +115,23 @@ Format: [{"index":0,"score":7,"community_fit":6,"reason":"..."}]
 JSON:`;
 
     const result = await withGeminiRetry(
-      () => geminiFlash.generateContent([{ text: prompt }]),
+      () =>
+        traceGeminiGenerateContent('citationEvaluator', () =>
+          geminiFlash.generateContent([{ text: prompt }])
+        ),
       { feature: 'citations', maxRetries: 3 }
     );
 
     if (!result.ok) {
       degradedMode = true;
       if (result.status === 'skipped_quota') {
-        const err = new CitationQuotaSkipError(result.retryAfterSec);
-        err.userMessage = result.message;
-        throw err;
+        return {
+          citations: [],
+          skippedQuota: { retryAfterSec: result.retryAfterSec, message: result.message ?? '요청이 많아 잠시 후 다시 시도해주세요.' },
+        };
       }
       console.error('[citationEvaluator] Gemini error', result.message);
-      return [];
+      return { citations: [] };
     }
 
     try {
@@ -174,7 +158,7 @@ JSON:`;
     }
   }
 
-  return allResults.sort((a, b) => a.index - b.index);
+  return { citations: allResults.sort((a, b) => a.index - b.index) };
 }
 
 export class CitationQuotaSkipError extends Error {

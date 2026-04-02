@@ -1,9 +1,51 @@
 import * as cheerio from 'cheerio';
 import type { AnalysisMeta, ContentQuality, TrustSignals } from './analysisTypes';
+import { extractSupplementalTextFromJsonLd } from './articleExtraction';
 import { countProductSpecBlocks } from './paragraphAnalyzer';
+import { extractVideoId } from './youtubeMetadataExtractor';
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+interface JsonLdWalkAccumulator {
+  typesFound: Set<string>;
+  hasJsonLdProduct: boolean;
+  hasJsonLdItemList: boolean;
+  hasJsonLdOfferOrAggregate: boolean;
+  hasFaqSchema: boolean;
+  hasReviewSchema: boolean;
+  jsonLdAuthor: boolean;
+  jsonLdDatePublished: boolean;
+  jsonLdDateModified: boolean;
+}
+
+function walkJsonLdNode(node: unknown, acc: JsonLdWalkAccumulator): void {
+  if (node === null || node === undefined) return;
+  if (typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const x of node) walkJsonLdNode(x, acc);
+    return;
+  }
+  const o = node as Record<string, unknown>;
+  const t = o['@type'];
+  const typeArr = Array.isArray(t) ? t : t ? [t] : [];
+  for (const tt of typeArr) {
+    if (typeof tt !== 'string') continue;
+    acc.typesFound.add(tt);
+    if (tt === 'Product') acc.hasJsonLdProduct = true;
+    if (tt === 'ItemList') acc.hasJsonLdItemList = true;
+    if (tt === 'Offer' || tt === 'AggregateOffer') acc.hasJsonLdOfferOrAggregate = true;
+    if (tt === 'FAQPage') acc.hasFaqSchema = true;
+    if (tt === 'Review') acc.hasReviewSchema = true;
+  }
+  if (o.author) acc.jsonLdAuthor = true;
+  if (o.datePublished) acc.jsonLdDatePublished = true;
+  if (o.dateModified) acc.jsonLdDateModified = true;
+  for (const k of Object.keys(o)) {
+    if (k === '@context') continue;
+    walkJsonLdNode(o[k], acc);
+  }
+}
 
 /**
  * 주어진 URL에서 HTML을 가져옵니다.
@@ -34,16 +76,16 @@ export async function fetchHtml(url: string, appOrigin?: string): Promise<string
 
   const html = await response.text();
 
-  // [콘솔 체크 포인트]
-  const bodyIdx = html.toLowerCase().indexOf('<body');
-  const bodyPreview = bodyIdx >= 0
-    ? html.substring(bodyIdx, bodyIdx + 500)
-    : html.substring(0, 500);
-  console.log('--- HTML 수집 결과 ---');
-  console.log('URL:', url);
-  console.log('HTML 길이:', html.length);
-  console.log('Body 내용 일부:', bodyPreview);
-  console.log('---------------------');
+  // Debug logging only when GEO_DEBUG=1 to avoid noisy production logs
+  if (process.env.GEO_DEBUG === '1') {
+    const bodyIdx = html.toLowerCase().indexOf('<body');
+    const bodyPreview = bodyIdx >= 0 ? html.substring(bodyIdx, bodyIdx + 500) : html.substring(0, 500);
+    console.log('--- HTML 수집 결과 ---');
+    console.log('URL:', url);
+    console.log('HTML 길이:', html.length);
+    console.log('Body 내용 일부:', bodyPreview);
+    console.log('---------------------');
+  }
 
   return html;
 }
@@ -60,8 +102,11 @@ export function extractMetaAndContent(html: string): {
   hasFaqSchema: boolean;
   hasStructuredData: boolean;
   hasProductSchema: boolean;
+  hasReviewSchema: boolean;
   contentQuality: ContentQuality;
   trustSignals: TrustSignals;
+  limitedAnalysis?: boolean;
+  limitedReason?: string | null;
 } {
   const $ = cheerio.load(html);
 
@@ -98,50 +143,57 @@ export function extractMetaAndContent(html: string): {
   let hasFaqSchema = false;
   let hasStructuredData = false;
   let hasProductSchema = false;
+  let hasReviewSchema = false;
+  let hasOgProductType = false;
+  let commerceKeywordCount = 0;
+  let buyButtonCount = 0;
+  let priceMatchCount = 0;
+  let repeatedProductCardCount = 0;
+  let hasCommerceKeywords = false;
+
+  const jsonLdAcc: JsonLdWalkAccumulator = {
+    typesFound: new Set<string>(),
+    hasJsonLdProduct: false,
+    hasJsonLdItemList: false,
+    hasJsonLdOfferOrAggregate: false,
+    hasFaqSchema: false,
+    hasReviewSchema: false,
+    jsonLdAuthor: false,
+    jsonLdDatePublished: false,
+    jsonLdDateModified: false,
+  };
+
   $('script[type="application/ld+json"]').each((_, elem) => {
     hasStructuredData = true;
     try {
       const json = JSON.parse($(elem).html() || '');
-      const types = Array.isArray(json) ? json : [json];
-      const productTypes = ['Product', 'ItemList', 'Offer', 'AggregateOffer'];
-      for (const item of types) {
-        const t = item['@type'];
-        const typeArr = Array.isArray(t) ? t : (t ? [t] : []);
-        if (typeArr.some((tt: string) => productTypes.includes(tt))) hasProductSchema = true;
-        if (
-          typeArr.includes('FAQPage') ||
-          (item['@graph'] && Array.isArray(item['@graph']) && item['@graph'].some((n: { '@type'?: string }) => n['@type'] === 'FAQPage'))
-        ) {
-          hasFaqSchema = true;
-        }
-        if (item['@graph'] && Array.isArray(item['@graph'])) {
-          for (const node of item['@graph']) {
-            if (node['@type'] === 'FAQPage') hasFaqSchema = true;
-            if (productTypes.includes(node['@type'] as string)) hasProductSchema = true;
-          }
-        }
-      }
+      const roots = Array.isArray(json) ? json : [json];
+      for (const item of roots) walkJsonLdNode(item, jsonLdAcc);
     } catch {
-      // ignore
+      // ignore malformed JSON-LD
     }
   });
 
-  // JSON-LD 구조화 데이터에서 trust signals 추출
-  let jsonLdAuthor = false;
-  let jsonLdDatePublished = false;
-  let jsonLdDateModified = false;
-  $('script[type="application/ld+json"]').each((_, el) => {
-    try {
-      const raw = $(el).html() ?? '';
-      const ld = JSON.parse(raw);
-      const items = Array.isArray(ld) ? ld : [ld];
-      for (const item of items) {
-        if (item.author) jsonLdAuthor = true;
-        if (item.datePublished) jsonLdDatePublished = true;
-        if (item.dateModified) jsonLdDateModified = true;
-      }
-    } catch { /* malformed JSON-LD */ }
-  });
+  hasFaqSchema = jsonLdAcc.hasFaqSchema;
+  hasReviewSchema = jsonLdAcc.hasReviewSchema;
+  const jsonLdProductTypesFound = [...jsonLdAcc.typesFound].sort();
+  const hasJsonLdProduct = jsonLdAcc.hasJsonLdProduct;
+  const hasJsonLdItemList = jsonLdAcc.hasJsonLdItemList;
+  const hasJsonLdOfferOrAggregate = jsonLdAcc.hasJsonLdOfferOrAggregate;
+  const hasJsonLdStandaloneProduct = hasJsonLdProduct && !hasJsonLdItemList;
+  const hasJsonLdProductInListContext = hasJsonLdItemList && hasJsonLdProduct;
+  /** Legacy: any commerce-relevant JSON-LD (scoring / isDataPage) — unchanged broad OR */
+  hasProductSchema =
+    hasJsonLdProduct || hasJsonLdItemList || hasJsonLdOfferOrAggregate;
+
+  // OG product type detection
+  if ($('meta[property="og:type"]').attr('content')?.toLowerCase() === 'product') {
+    hasOgProductType = true;
+  }
+
+  const jsonLdAuthor = jsonLdAcc.jsonLdAuthor;
+  const jsonLdDatePublished = jsonLdAcc.jsonLdDatePublished;
+  const jsonLdDateModified = jsonLdAcc.jsonLdDateModified;
 
   const hasAuthor = !!(
     jsonLdAuthor ||
@@ -162,6 +214,27 @@ export function extractMetaAndContent(html: string): {
   );
 
   const fullHtml = $.html() ?? '';
+  const lowered = fullHtml.toLowerCase();
+  // Detect common bot-check / interstitial patterns
+  const protectionPatterns = [
+    /access denied/i,
+    /please enable javascript/i,
+    /captcha/i,
+    /robot or human/i,
+    /verify you are a human/i,
+    /blocked/i,
+    /forbidden/i,
+    /access denied/i,
+  ];
+  let limitedAnalysis = false;
+  let limitedReason: string | null = null;
+  if ((fullHtml.length ?? 0) < 2000) {
+    limitedAnalysis = true;
+    limitedReason = 'short_html';
+  } else if (protectionPatterns.some((p) => p.test(lowered))) {
+    limitedAnalysis = true;
+    limitedReason = 'site_protection';
+  }
   const contactHrefPattern = /href=["'][^"']*(?:contact|문의|연락|상담|고객센터|inquiry|support|cs|help)/i;
   let hasContactLink = contactHrefPattern.test(fullHtml);
   if (!hasContactLink) {
@@ -175,9 +248,11 @@ export function extractMetaAndContent(html: string): {
   }
   const hasAboutLink = /href=["'][^"']*(?:about|소개|회사소개|기업소개)/i.test(fullHtml);
 
+  const jsonLdSupplement = extractSupplementalTextFromJsonLd(html);
   $('script, style, noscript, svg').remove();
   const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
-  const contentText = bodyText.substring(0, 20000);
+  const mergedForContent = [bodyText, jsonLdSupplement].filter(Boolean).join('\n\n').trim();
+  const contentText = mergedForContent.substring(0, 20000);
 
   // AI Citeability: 첫 문단 분석 (20자 이상인 첫 의미 있는 문단 또는 H1)
   let firstP = '';
@@ -220,8 +295,45 @@ export function extractMetaAndContent(html: string): {
   }
   const productSpecBlockCount = countProductSpecBlocks($.html() ?? '');
 
-  // 가격 정보
-  const hasPriceInfo = /[\d,]+\s*원|₩\s*[\d,]+|\$\s*[\d,.]+|[\d,]+\s*만원|무료|가격|비용|렌탈료|월\s*[\d,]+/.test(contentText);
+  // 가격 정보 + 가격 패턴 카운트
+  const pricePattern = /(\d{1,3}(?:,\d{3})*\s*원|₩\s*\d{1,3}(?:,\d{3})*|\$\s*\d{1,3}(?:[.,]\d{2})?|\d{1,3}(?:,\d{3})*\s*만원)/g;
+  const priceMatches = [...(contentText.matchAll(pricePattern) || [])];
+  priceMatchCount = priceMatches.length;
+  const hasPriceInfo = priceMatchCount > 0 || /무료|가격|비용|렌탈료|월\s*[\d,]+/.test(contentText);
+
+  // Commerce keyword detection (class/id/button/link text)
+  const commerceKeysEn = ['cart','checkout','order','purchase','buy-now','buy','wishlist','add-to-cart','addtocart'];
+  const commerceKeysKr = ['장바구니','구매하기','결제하기','주문하기','배송비','바로구매'];
+  const commerceSelectorPattern = '[class],[id],button,a';
+  $(commerceSelectorPattern).each((_, el) => {
+    const cls = ($(el).attr('class') || '') + ' ' + ($(el).attr('id') || '');
+    const text = $(el).text().replace(/\s+/g, ' ').trim();
+    const combined = (cls + ' ' + text).toLowerCase();
+    for (const k of commerceKeysEn) {
+      if (combined.includes(k)) commerceKeywordCount++;
+    }
+    for (const k of commerceKeysKr) {
+      if (combined.includes(k)) commerceKeywordCount++;
+    }
+    // buy button heuristic
+    if (/\b(buy|구매|장바구니|구매하기|바로구매|주문)\b/i.test(text)) buyButtonCount++;
+  });
+  hasCommerceKeywords = commerceKeywordCount > 0;
+
+  // Repeated product card detection — avoid generic [class*="item"] (inflates editorial layouts)
+  const productCardSelectors = [
+    '.product',
+    '[class*="product-"]',
+    '[class*="prd-"]',
+    '[class*="product_card"]',
+    '[class*="product-card"]',
+    '[class*="prd"]',
+  ];
+  let prodCards = 0;
+  for (const sel of productCardSelectors) {
+    prodCards += Math.min(45, $(sel).length);
+  }
+  repeatedProductCardCount = prodCards;
 
   const pageQuestions = extractQuestions(contentText, headings);
 
@@ -238,6 +350,18 @@ export function extractMetaAndContent(html: string): {
     hasDefinitionPattern,
     hasPriceInfo,
     productSpecBlockCount,
+    priceMatchCount,
+    buyButtonCount,
+    commerceKeywordCount,
+    repeatedProductCardCount,
+    hasOgProductType,
+    hasCommerceKeywords,
+    jsonLdProductTypesFound,
+    hasJsonLdProduct,
+    hasJsonLdItemList,
+    hasJsonLdOfferOrAggregate,
+    hasJsonLdStandaloneProduct,
+    hasJsonLdProductInListContext,
   };
 
   const trustSignals: TrustSignals = {
@@ -257,8 +381,11 @@ export function extractMetaAndContent(html: string): {
     hasFaqSchema,
     hasStructuredData,
     hasProductSchema,
+    hasReviewSchema,
     contentQuality,
     trustSignals,
+    limitedAnalysis,
+    limitedReason,
   };
 }
 
@@ -338,6 +465,16 @@ export function normalizeUrl(url: string): string {
 
     keysToDelete.forEach(key => params.delete(key));
     urlObj.search = params.toString();
+
+    // YouTube canonicalization: normalize watch/shorts/youtu.be to canonical watch URL
+    try {
+      const vid = extractVideoId(url);
+      if (vid) {
+        return `https://www.youtube.com/watch?v=${vid}`;
+      }
+    } catch {
+      // ignore and fall back to general normalization
+    }
 
     // trailing slash 제거
     let normalized = urlObj.toString();

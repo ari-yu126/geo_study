@@ -1,6 +1,23 @@
+# ⚠️ Legacy Document
+
+This file is deprecated.
+
+The documentation has been refactored into modular files under:
+
+docs/gemini-project-state/
+
+Please refer to the new structure instead.
+
 # GEO Analyzer — 프로젝트 현재 상태 (Gemini용)
 
-> 이 문서는 **제미나이(Gemini)**가 프로젝트를 빠르게 파악할 수 있도록 정리한 개요입니다.
+> NOTE: 이 문서는 섹션별로 분리되어 `docs/gemini-project-state/` 아래에 별도 파일로 관리됩니다.
+> 원문 보존용으로 이 파일은 그대로 두며, 실제 편집은 `docs/gemini-project-state/`의 개별 파일에서 진행하세요.
+
+> 섹션 파일 예:
+> - `docs/gemini-project-state/01-project-overview.md`
+> - `docs/gemini-project-state/02-core-concepts.md`
+> - `docs/gemini-project-state/03-scoring.md`
+> - `...` (전체 목록은 repo의 docs/gemini-project-state/ 폴더 참조)
 
 ---
 

@@ -1,4 +1,4 @@
-import { geminiFlash } from './geminiClient';
+import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
 import { isQuotaError, isLlmCooldown } from './llmError';
 import type { SearchQuestion } from './analysisTypes';
 
@@ -12,6 +12,13 @@ export function hasActualAiCitationDomain(hostname: string): boolean {
   );
 }
 
+/** Trace for score-axis / quota debugging */
+export type CheckActualAiCitationMeta = {
+  path: 'skipped' | 'perplexity' | 'gemini';
+  degraded?: boolean;
+  reason?: 'no_host' | 'no_gemini' | 'cooldown' | 'quota' | 'error';
+};
+
 /**
  * 실제 AI 인용 검증(Grounding): Perplexity/Google AI Overview가 해당 주제에 대해
  * 주로 인용하는 도메인 TOP 5~10을 조회하고, 분석 대상 사이트가 포함되는지 확인합니다.
@@ -23,8 +30,10 @@ export async function checkActualAiCitation(
   analysisHost: string,
   searchQuestions: SearchQuestion[],
   pageTitle: string | null
-): Promise<boolean> {
-  if (!analysisHost) return false;
+): Promise<{ matched: boolean; meta: CheckActualAiCitationMeta }> {
+  if (!analysisHost) {
+    return { matched: false, meta: { path: 'skipped', reason: 'no_host' } };
+  }
 
   // Perplexity API가 있으면 우선 사용 (실제 인용 데이터)
   const perplexityKey = process.env.PERPLEXITY_API_KEY;
@@ -34,12 +43,24 @@ export async function checkActualAiCitation(
       searchQuestions
     );
     if (fromPerplexity.length > 0) {
-      return domainMatches(analysisHost, fromPerplexity);
+      const matched = domainMatches(analysisHost, fromPerplexity);
+      return { matched, meta: { path: 'perplexity' } };
     }
   }
 
   // Fallback: Gemini로 AI 인용 도메인 예측
-  if (!geminiFlash || isLlmCooldown()) return false;
+  if (!geminiFlash) {
+    return {
+      matched: false,
+      meta: { path: 'skipped', degraded: true, reason: 'no_gemini' },
+    };
+  }
+  if (isLlmCooldown()) {
+    return {
+      matched: false,
+      meta: { path: 'skipped', degraded: true, reason: 'cooldown' },
+    };
+  }
 
   const sampleQuestions = searchQuestions.slice(0, 5).map((q) => q.text).join('\n- ');
   const title = pageTitle ?? '제목 없음';
@@ -66,20 +87,32 @@ samsung.com
 도메인 목록:`;
 
   try {
-    const result = await geminiFlash.generateContent([{ text: prompt }]);
+    // Mandatory cool-down before Gemini call (free-tier safety)
+    await new Promise((res) => setTimeout(res, 5000));
+    const result = await traceGeminiGenerateContent('actualAiCitation', () =>
+      geminiFlash.generateContent([{ text: prompt }])
+    );
     const raw = result.response.text().trim();
     const domains = raw
       .split(/\n/)
       .map((line) => line.replace(/^[-*\d.)\s]+/, '').trim().toLowerCase())
       .filter((d) => d.length >= 4 && /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d));
-    return domainMatches(analysisHost, domains);
+    const matched = domainMatches(analysisHost, domains);
+    return { matched, meta: { path: 'gemini' } };
   } catch (err) {
     if (isQuotaError(err)) {
       console.warn('[GEMINI] quota exceeded - checkActualAiCitation, using false');
     } else {
       console.warn('checkActualAiCitation failed', err);
     }
-    return false;
+    return {
+      matched: false,
+      meta: {
+        path: 'gemini',
+        degraded: true,
+        reason: isQuotaError(err) ? 'quota' : 'error',
+      },
+    };
   }
 }
 

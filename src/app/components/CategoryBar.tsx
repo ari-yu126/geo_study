@@ -113,7 +113,7 @@ export default function CategoryBar({
           </div>
           <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: "#c4d0e0", lineHeight: 1.7 }}>
             {criteriaItems.map((item, i) => (
-              <li key={i}>{item}</li>
+              <li key={`${label}-crit-${i}`}>{item}</li>
             ))}
           </ul>
         </div>

@@ -209,7 +209,8 @@ function scoreParagraph(p: Paragraph): number {
 export function analyzeParagraphs(
   html: string,
   headings: string[],
-  searchQuestions: { text: string }[] = []
+  searchQuestions: { text: string }[] = [],
+  limit?: number
 ): ParagraphStats {
   const $ = cheerio.load(html);
   $('script, style, noscript, nav, header, footer, iframe, svg').remove();
@@ -250,6 +251,30 @@ export function analyzeParagraphs(
     });
   }
 
+  // Editorial reviews / comparisons (RTINGS-style): section blocks, tables, long list items
+  const reviewLike = /review|verdict|comparison|rating|score|test|results|performance|battery|sound|noise|frequency|latency|comfort|mic|driver|cons|pros/i;
+  if (paragraphs.length < 8) {
+    $('section, [role="region"], details').each((_, el) => {
+      if (paragraphs.length >= 28) return false;
+      const text = $(el).text().trim();
+      if (text.length >= 70 && text.length <= 2200 && reviewLike.test(text)) addIfNew(text, 15);
+    });
+  }
+  if (paragraphs.length < 8) {
+    $('table td, table th').each((_, el) => {
+      if (paragraphs.length >= 28) return false;
+      const text = $(el).text().trim();
+      if (text.length >= 40 && /\d/.test(text)) addIfNew(text, 15);
+    });
+  }
+  if (paragraphs.length < 8) {
+    $('main li, article li, [role="main"] li').each((_, el) => {
+      if (paragraphs.length >= 28) return false;
+      const text = $(el).text().trim();
+      if (text.length >= 65 && (reviewLike.test(text) || /\d/.test(text))) addIfNew(text, 15);
+    });
+  }
+
   if (paragraphs.length === 0) {
     return {
       totalParagraphs: 0,
@@ -268,16 +293,18 @@ export function analyzeParagraphs(
     };
   }
 
-  const dataDenseBlockCount = paragraphs.filter((p) => hasNumberAndUnit(p.text)).length;
+  // If a caller requests reduced analysis (test mode), only use the first `limit` paragraphs.
+  const effectiveParagraphs = typeof limit === 'number' && limit > 0 ? paragraphs.slice(0, limit) : paragraphs;
+  const dataDenseBlockCount = effectiveParagraphs.filter((p) => hasNumberAndUnit(p.text)).length;
 
-  const definitionCount = paragraphs.filter(p => p.isDefinition).length;
-  const goodLengthCount = paragraphs.filter(p => p.isGoodLength).length;
-  const fluffCount = paragraphs.filter(p => p.isFluff).length;
+  const definitionCount = effectiveParagraphs.filter(p => p.isDefinition).length;
+  const goodLengthCount = effectiveParagraphs.filter(p => p.isGoodLength).length;
+  const fluffCount = effectiveParagraphs.filter(p => p.isFluff).length;
 
   let duplicateCount = 0;
-  for (let i = 1; i < paragraphs.length; i++) {
-    const prevTokens = tokenize(paragraphs[i - 1].text);
-    const currTokens = tokenize(paragraphs[i].text);
+  for (let i = 1; i < effectiveParagraphs.length; i++) {
+    const prevTokens = tokenize(effectiveParagraphs[i - 1].text);
+    const currTokens = tokenize(effectiveParagraphs[i].text);
     if (jaccardSimilarity(prevTokens, currTokens) > 0.5) {
       duplicateCount++;
     }
@@ -292,12 +319,12 @@ export function analyzeParagraphs(
   ).length;
   const questionH2Ratio = headings.length > 0 ? questionH2Count / headings.length : 0;
 
-  const first300 = paragraphs.slice(0, 3).map(p => p.text).join(' ').substring(0, 500);
+  const first300 = effectiveParagraphs.slice(0, 3).map(p => p.text).join(' ').substring(0, 500);
   const earlySummaryExists = [...DEFINITION_PATTERNS_KO, ...DEFINITION_PATTERNS_EN]
     .some(p => p.test(first300));
 
   // 요약형 문단: 꿀팁/요약/방법론 키워드 포함 (문단 내 어디서나)
-  const summaryParagraphCount = paragraphs.filter((p) => p.isSummary).length;
+  const summaryParagraphCount = effectiveParagraphs.filter((p) => p.isSummary).length;
 
   // 실용적 키워드(How-to) 밀도: 방법론·실무 키워드 밀집 시 High Value Context
   const PRACTICAL_KEYWORD_PATTERNS = [
@@ -305,22 +332,22 @@ export function analyzeParagraphs(
     /how\s+to\b|\b단계별\b|체크리스트|가이드|가이드라인|수칙|포인트/i,
     /하는\s*법|하는\s*방법|알아보기|해결법|예방법|관리법|선택법/,
   ];
-  const fullText = paragraphs.map((p) => p.text).join(' ');
+  const fullText = effectiveParagraphs.map((p) => p.text).join(' ');
   const practicalKeywordMatches = PRACTICAL_KEYWORD_PATTERNS.filter((p) => p.test(fullText)).length;
   const hasHighValueContext = practicalKeywordMatches >= 2 && fullText.length >= 300;
 
-  paragraphs.forEach(p => { p.score = scoreParagraph(p); });
-  const avgScore = paragraphs.reduce((sum, p) => sum + p.score, 0) / paragraphs.length;
+  effectiveParagraphs.forEach(p => { p.score = scoreParagraph(p); });
+  const avgScore = effectiveParagraphs.reduce((sum, p) => sum + p.score, 0) / effectiveParagraphs.length;
 
   const infoDensity =
-    paragraphs.reduce((s, p) => s + p.infoDensity, 0) / paragraphs.length;
+    effectiveParagraphs.reduce((s, p) => s + p.infoDensity, 0) / effectiveParagraphs.length;
 
   const questionTerms = new Set<string>();
   for (const q of searchQuestions) {
     q.text.toLowerCase().split(/\s+/).filter(t => t.length >= 2).forEach(t => questionTerms.add(t));
   }
   let communityFitSum = 0;
-  for (const p of paragraphs) {
+  for (const p of effectiveParagraphs) {
     const paraTokens = new Set(tokenize(p.text));
     let overlap = 0;
     for (const t of questionTerms) {
@@ -329,15 +356,15 @@ export function analyzeParagraphs(
     communityFitSum += questionTerms.size > 0 ? overlap / questionTerms.size : 0;
   }
   const communityFitScore = Math.round(
-    (paragraphs.length > 0 ? communityFitSum / paragraphs.length : 0) * 100
+    (effectiveParagraphs.length > 0 ? communityFitSum / effectiveParagraphs.length : 0) * 100
   );
 
   return {
-    totalParagraphs: paragraphs.length,
+    totalParagraphs: effectiveParagraphs.length,
     definitionRatio: definitionCount / paragraphs.length,
     goodLengthRatio: goodLengthCount / paragraphs.length,
     fluffRatio: fluffCount / paragraphs.length,
-    duplicateRatio: paragraphs.length > 1 ? duplicateCount / (paragraphs.length - 1) : 0,
+    duplicateRatio: effectiveParagraphs.length > 1 ? duplicateCount / (effectiveParagraphs.length - 1) : 0,
     questionH2Ratio,
     earlySummaryExists,
     summaryParagraphCount,

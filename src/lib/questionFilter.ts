@@ -1,4 +1,4 @@
-import { geminiFlash } from './geminiClient';
+import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
 import { isQuotaError, isLlmCooldown } from './llmError';
 import type { SearchQuestion } from './analysisTypes';
 
@@ -7,6 +7,17 @@ export interface FilterQuestionsOptions {
   /** 주제 구문 (있으면 STRICT RELEVANCE 프롬프트 사용) */
   primaryPhrase?: string;
 }
+
+/** How question filtering ran — for score-axis / quota debugging */
+export type FilterQuestionsRunMeta = {
+  status:
+    | 'ok_llm'
+    | 'bypass_empty_questions'
+    | 'bypass_no_gemini'
+    | 'bypass_cooldown'
+    | 'bypass_quota'
+    | 'bypass_error';
+};
 
 /**
  * 수집된 질문 중 페이지 주제와 맞는 것만 Gemini로 필터링합니다.
@@ -17,9 +28,16 @@ export async function filterQuestionsByPageRelevance(
   pageTitle: string | null,
   pageContentSnippet: string,
   options?: FilterQuestionsOptions
-): Promise<SearchQuestion[]> {
-  if (!geminiFlash || !questions.length) return questions;
-  if (isLlmCooldown()) return questions;
+): Promise<{ questions: SearchQuestion[]; meta: FilterQuestionsRunMeta }> {
+  if (!questions.length) {
+    return { questions, meta: { status: 'bypass_empty_questions' } };
+  }
+  if (!geminiFlash) {
+    return { questions, meta: { status: 'bypass_no_gemini' } };
+  }
+  if (isLlmCooldown()) {
+    return { questions, meta: { status: 'bypass_cooldown' } };
+  }
 
   const isVideo = options?.pageType === 'video';
   const primaryPhrase = options?.primaryPhrase ?? '';
@@ -56,7 +74,11 @@ ${list}
 페이지 주제와 무관한 질문(다른 상품, 다른 도메인, 완전히 다른 주제)은 제외해줘.`;
 
   try {
-    const result = await geminiFlash.generateContent([{ text: prompt }]);
+    // Mandatory cool-down before Gemini call (free-tier safety)
+    await new Promise((res) => setTimeout(res, 5000));
+    const result = await traceGeminiGenerateContent('questionFilter', () =>
+      geminiFlash.generateContent([{ text: prompt }])
+    );
     const raw = result.response.text().trim();
     const indices = raw
       .replace(/[^\d,]/g, '')
@@ -71,15 +93,20 @@ ${list}
         filtered.push(questions[idx - 1]);
       }
     }
-    if (filtered.length > 0) return filtered;
-    if (isVideo && questions.length >= 10) return questions.slice(0, 10);
-    return questions;
+    if (filtered.length > 0) return { questions: filtered, meta: { status: 'ok_llm' } };
+    if (isVideo && questions.length >= 10) {
+      return { questions: questions.slice(0, 10), meta: { status: 'ok_llm' } };
+    }
+    return { questions, meta: { status: 'ok_llm' } };
   } catch (err) {
     if (isQuotaError(err)) {
       console.warn('[GEMINI] quota exceeded - filterQuestionsByPageRelevance, using original list');
     } else {
       console.warn('filterQuestionsByPageRelevance failed, using original list', err);
     }
-    return questions;
+    return {
+      questions,
+      meta: { status: isQuotaError(err) ? 'bypass_quota' : 'bypass_error' },
+    };
   }
 }

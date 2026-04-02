@@ -1,4 +1,4 @@
-import { geminiFlash } from './geminiClient';
+import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
 import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
 import { withGeminiRetry } from './geminiRetry';
 import type { AnalysisMeta, AnalysisResult, AuditIssue, GeoScores, SeedKeyword, TrustSignals, SearchQuestion } from './analysisTypes';
@@ -171,7 +171,10 @@ export async function runGeminiVideoAnalysis(
 JSON:`;
 
   const wrap = await withGeminiRetry(
-    () => geminiFlash.generateContent([{ text: prompt }]),
+    () =>
+      traceGeminiGenerateContent('geminiVideoAnalysis', () =>
+        geminiFlash.generateContent([{ text: prompt }])
+      ),
     { feature: 'videoAnalysis', maxRetries: 3 }
   );
 

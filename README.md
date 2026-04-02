@@ -1,42 +1,85 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# GEO Analyzer
 
-## Getting Started
+GEO Analyzer analyzes web pages to compute a GEO (Generative Engine Optimization) score and provide actionable recommendations to improve AI citation potential and user answerability.
 
-### 환경 변수
+## What this project contains
 
-`.env.local`에 `GOOGLE_GENAI_API_KEY` 또는 `GEMINI_API_KEY`를 설정하세요. **수정 후에는 `next dev`를 재시작해야 env가 반영됩니다.**
+- **Analysis Engine** — extracts metadata, paragraphs, computes GEO scores (scoring system).  
+- **Recommendation Engine** — generates prioritized, actionable content & metadata recommendations.  
+- **UI** — interactive dashboard with left-side recommendations and right-side iframe preview.
 
-### 개발 서버 실행
+## AI model, roles, and processing (course submission)
 
-First, run the development server:
+| Item | This project |
+| --- | --- |
+| **Model** | **Google Gemini** via `@google/generative-ai`. Default model name: `gemini-2.5-flash-lite` (override with `GENERATIVE_MODEL` in `.env.local`). Monthly GEO config research may use another Gemini model selected in-app / API. |
+| **Why AI** | Semantic tasks that rules alone do not cover: e.g. judging citation-like quality of text chunks, filtering or scoring questions, phrasing recommendations, optional video transcript analysis. |
+| **Roles** | **Scoring support:** LLM-assisted chunk evaluation (`src/lib/citationEvaluator.ts`). **Recommendations:** one consolidated LLM call for wording and prioritization from structured signals (`src/lib/recommendationEngine.ts`). **Other pipeline calls:** e.g. question filtering (`src/lib/questionFilter.ts`), “actual AI citation” checks (`src/lib/actualAiCitation.ts`), video analysis (`src/lib/geminiVideoAnalysis.ts`). **Admin / research:** GEO scoring-config update flow uses Gemini (`src/app/api/geo-config/update/route.ts`). |
+| **Processing style** | **Hybrid:** deterministic extraction, rule-based and config-driven scoring, and **targeted `generateContent` calls** with prompts defined in the source files above — not a single end-to-end prompt for the whole page. Retries / tracing: `src/lib/geminiRetry.ts`, `src/lib/geminiTraceContext.ts`. |
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Non-AI parts include HTML parsing, paragraph extraction, caching, and much of the score pipeline (see `docs/geo-project-state/05-pipeline.md`).
+
+## Documentation (entry point)
+
+Primary docs are under `docs/geo-project-state/`. Start from **`00-index.md`** (full table of contents) or **`index.md`** — filenames in the repo match what those index files list (e.g. `01-project-overview.md`, not `01-overview.md`).
+
+## Getting started (development)
+
+1. Create `.env.local` with required keys:
+
+```env
+# Gemini: either GOOGLE_GENAI_API_KEY or GEMINI_API_KEY (see src/lib/geminiClient.ts)
+GOOGLE_GENAI_API_KEY=your_key_here
+TAVILY_API_KEY=optional_key
+# Optional: add recent web “trend” snippets to monthly GEO scoring-config research (primary sources are official URLs + Semantic Scholar).
+GEO_CONFIG_TAVILY_SUPPLEMENT=false
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+GENERATIVE_MODEL=gemini-2.5-flash-lite
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Install dependencies and start dev server:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+3. Open the app at http://localhost:3232 and use the UI to analyze pages. **After changing `.env.local`, restart `npm run dev`.**
 
-## Learn More
+## Core architecture
 
-To learn more about Next.js, take a look at the following resources:
+- `src/lib/runAnalysis.ts` — analysis orchestration  
+- `src/lib/citationEvaluator.ts` — Gemini chunk scoring & LLM calls  
+- `src/lib/recommendationEngine.ts` — recommendation skeleton + single LLM call for phrasing/prioritization  
+- `src/app/*` — UI, API routes, and developer tools
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Two primary systems — keep them separate
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Analysis (scoring): produces measurable signals (GeoScores, paragraphStats, trustSignals).  
+2. Recommendation: consumes signals and produces human/actionable guidance.  
 
-## Deploy on Vercel
+They are intentionally decoupled: scoring ≠ recommendations.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Tech stack
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Next.js 16 (App Router)  
+- React 19 + TypeScript  
+- Tailwind CSS v4  
+- @google/generative-ai (Gemini integration)  
+- Supabase (cache & config)
+
+## Project goals
+
+- Reduce friction for publishers to improve pages for AI-first search.  
+- Produce explainable recommendations grounded in measurable signals.  
+- Keep LLM usage safe, minimal, and auditable.
+
+## Optional npm scripts
+
+Dataset / validation utilities (see `package.json` and `scripts/`):
+
+- `npm run validate:editorial-subtype`
+- `npm run summarize:editorial-subtype`
+- `npm run evaluate:geo-ai-citations`
+- `npm run evaluate:geo-ai-citations-paired`
