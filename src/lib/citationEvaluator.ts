@@ -1,6 +1,10 @@
 import type { ChunkCitation } from './analysisTypes';
+import {
+  analysisLlmGenerateText,
+  analysisLlmIsConfigured,
+  getAnalysisLlmPreCallDelayMs,
+} from './analysisLlm';
 import { computeChunkInfoDensity } from './paragraphAnalyzer';
-import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
 import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
 import { withGeminiRetry, GEMINI_BATCH_SIZE, GEMINI_RETRY_DELAY } from './geminiRetry';
 
@@ -30,7 +34,7 @@ export interface EvaluateCitationsResult {
 export async function evaluateCitations(params: EvaluateCitationsParams): Promise<EvaluateCitationsResult> {
   const { chunks, searchQuestions, isFaqLikePage = false, hasActualAiCitation = false } = params;
 
-  if (!geminiFlash || chunks.length === 0) return { citations: [] };
+  if (!analysisLlmIsConfigured() || chunks.length === 0) return { citations: [] };
 
   if (isLlmCooldown()) {
     const sec = getCooldownRemainingSec();
@@ -115,11 +119,12 @@ Format: [{"index":0,"score":7,"community_fit":6,"reason":"..."}]
 JSON:`;
 
     const result = await withGeminiRetry(
-      () =>
-        traceGeminiGenerateContent('citationEvaluator', () =>
-          geminiFlash.generateContent([{ text: prompt }])
-        ),
-      { feature: 'citations', maxRetries: 3 }
+      () => analysisLlmGenerateText('citationEvaluator', prompt),
+      {
+        feature: 'citations',
+        maxRetries: 3,
+        preCallDelayMs: getAnalysisLlmPreCallDelayMs(),
+      }
     );
 
     if (!result.ok) {
@@ -135,7 +140,10 @@ JSON:`;
     }
 
     try {
-      const raw = result.data.response.text().trim();
+      const raw =
+        typeof result.data === 'string'
+          ? result.data.trim()
+          : String(result.data ?? '').trim();
       const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
       const parsed: { index: number; score: number; community_fit?: number; communityFit?: number; reason: string }[] =
         JSON.parse(jsonStr);

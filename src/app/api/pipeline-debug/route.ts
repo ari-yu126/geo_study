@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { fetchHtml, extractMetaAndContent } from '@/lib/htmlAnalyzer';
 import { extractSeedKeywords } from '@/lib/keywordExtractor';
 import { derivePrimaryTopic } from '@/lib/searchQuestions';
+import { buildCanonicalSearchQuestions } from '@/lib/canonicalSearchQuestions';
+import { buildCoverageMatchInput } from '@/lib/coverageSurfaces';
 import { computeSearchQuestionCoverage } from '@/lib/questionCoverage';
 import type { SeedKeyword, SearchQuestion, AnalysisMeta } from '@/lib/analysisTypes';
 import { geminiFlash } from '@/lib/geminiClient';
@@ -111,7 +113,8 @@ function dedupeQuestions(questions: SearchQuestion[]) {
 type SemanticMatchResult = { available: boolean; canAnswer: boolean | null; explanation: string; confidence?: number };
 
 async function semanticVerifyQuestionWithGemini(questionText: string, pageText: string): Promise<SemanticMatchResult> {
-  if (!geminiFlash) return { available: false, canAnswer: null, explanation: 'gemini_not_available' };
+  const model = geminiFlash;
+  if (!model) return { available: false, canAnswer: null, explanation: 'gemini_not_available' };
   const prompt = `You are an evaluator. Given the following webpage text (EXTRACT) and a user question (QUESTION), answer whether the page can meaningfully answer the question.
 
 Return ONLY JSON with keys:
@@ -130,7 +133,7 @@ ${questionText}
 Answer now in JSON only.`;
 
   const wrap = await withGeminiRetry(
-    () => geminiFlash.generateContent([{ text: prompt }]),
+    () => model.generateContent([{ text: prompt }]),
     { feature: 'coverageVerify', maxRetries: 1 }
   );
   if (!wrap.ok) {
@@ -154,7 +157,7 @@ export async function POST(req: Request) {
 
     // 1) HTML + meta + headings + seed keywords
     const html = await fetchHtml(url);
-    const { meta, headings, contentText, pageQuestions } = extractMetaAndContent(html);
+    const { meta, headings, contentText, pageQuestions, hasFaqSchema } = extractMetaAndContent(html);
     const seedKeywords: SeedKeyword[] = extractSeedKeywords(meta as AnalysisMeta, headings, contentText);
     const primary = derivePrimaryTopic(meta as AnalysisMeta, url, seedKeywords);
 
@@ -223,13 +226,30 @@ export async function POST(req: Request) {
     const nonJunk = validFiltered.filter(c => !isJunkQuestion(c.text));
     const finalQuestions = nonJunk.map(q => ({ source: q.source, text: q.text, url: q.url })) as SearchQuestion[];
 
-    // 4) coverage calculation
-    const coverageBooleans = computeSearchQuestionCoverage(pageQuestions, finalQuestions, contentText);
+    const canonicalQuestions = buildCanonicalSearchQuestions({
+      evidence: finalQuestions,
+      seedKeywords,
+      meta: { title: meta.title, ogTitle: meta.ogTitle },
+      topic: primary,
+      pageType: undefined,
+    });
+    const coverageInput = buildCoverageMatchInput({
+      meta,
+      headings,
+      html,
+      contentText,
+      pageQuestions,
+      hasFaqSchema,
+      topicTokens: primary.essentialTokens,
+    });
+
+    // 4) coverage calculation (canonical intents × structured surfaces)
+    const coverageBooleans = computeSearchQuestionCoverage(canonicalQuestions, coverageInput);
 
     // prepare coverage detail per question
     const coverageDetails: Array<Record<string, unknown>> = [];
-    for (let i = 0; i < finalQuestions.length; i++) {
-      const q = finalQuestions[i];
+    for (let i = 0; i < canonicalQuestions.length; i++) {
+      const q = canonicalQuestions[i];
       const tokens = q.text.toLowerCase().split(/\s+/).filter(t => t.length>=2);
       const fullText = contentText.toLowerCase();
       const fullTextMatches = tokens.filter(t => fullText.includes(t)).length;
@@ -274,13 +294,14 @@ export async function POST(req: Request) {
       primary,
       seedKeywords,
       tavilyResults: tavilyResults.map(t => ({ focus: t.focus, query: t.query, fetchedCount: t.rawFetch?.results?.length ?? 0, error: t.rawFetch?.error ?? null })),
-      counts: { beforeDedupe: beforeDedupeCount, deduped: dedupedCount, afterFilters: finalQuestions.length },
+      counts: { beforeDedupe: beforeDedupeCount, deduped: dedupedCount, afterFilters: finalQuestions.length, canonical: canonicalQuestions.length },
       filters: {
         topicFilteredCount: topicFiltered.length,
         validFilteredCount: validFiltered.length,
         nonJunkCount: nonJunk.length,
       },
       finalQuestions,
+      canonicalQuestions,
       coverageDetails,
     }, { status: 200 });
   } catch (err) {

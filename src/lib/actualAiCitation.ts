@@ -1,4 +1,8 @@
-import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
+import {
+  analysisLlmGenerateText,
+  analysisLlmIsConfigured,
+  getAnalysisLlmPreCallDelayMs,
+} from './analysisLlm';
 import { isQuotaError, isLlmCooldown } from './llmError';
 import type { SearchQuestion } from './analysisTypes';
 
@@ -48,8 +52,8 @@ export async function checkActualAiCitation(
     }
   }
 
-  // Fallback: Gemini로 AI 인용 도메인 예측
-  if (!geminiFlash) {
+  // Fallback: LLM으로 AI 인용 도메인 예측
+  if (!analysisLlmIsConfigured()) {
     return {
       matched: false,
       meta: { path: 'skipped', degraded: true, reason: 'no_gemini' },
@@ -87,12 +91,11 @@ samsung.com
 도메인 목록:`;
 
   try {
-    // Mandatory cool-down before Gemini call (free-tier safety)
-    await new Promise((res) => setTimeout(res, 5000));
-    const result = await traceGeminiGenerateContent('actualAiCitation', () =>
-      geminiFlash.generateContent([{ text: prompt }])
-    );
-    const raw = result.response.text().trim();
+    const preDelay = getAnalysisLlmPreCallDelayMs();
+    if (preDelay > 0) {
+      await new Promise((res) => setTimeout(res, preDelay));
+    }
+    const raw = await analysisLlmGenerateText('actualAiCitation', prompt);
     const domains = raw
       .split(/\n/)
       .map((line) => line.replace(/^[-*\d.)\s]+/, '').trim().toLowerCase())

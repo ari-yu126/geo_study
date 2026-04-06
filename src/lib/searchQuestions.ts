@@ -1,4 +1,10 @@
 import type { AnalysisMeta, SeedKeyword, SearchQuestion, SearchSource, PageType } from './analysisTypes';
+import { normalizeUrl } from './normalizeUrl';
+import {
+  buildQuestionResearchCacheKey,
+  getCachedQuestionResearch,
+  saveQuestionResearchCache,
+} from './questionResearchCache';
 
 const DEBUG_SEARCH_QUESTIONS = process.env.DEBUG_SEARCH_QUESTIONS === '1';
 
@@ -611,6 +617,23 @@ export async function fetchSearchQuestions(
       return [];
     }
 
+    const normalizedUrl = url ? normalizeUrl(url) : '';
+    const cacheKey = buildQuestionResearchCacheKey({
+      normalizedUrl,
+      primaryPhrase,
+      essentialTokens,
+      pageType: options?.pageType,
+      isEnglishPage,
+    });
+
+    const cached = await getCachedQuestionResearch(cacheKey);
+    if (cached?.questions?.length) {
+      if (DEBUG_SEARCH_QUESTIONS) {
+        console.debug('[searchQuestions] cache hit', { cacheKey: cacheKey.slice(0, 16), updatedAt: cached.updatedAt });
+      }
+      return cached.questions;
+    }
+
     const primaryTasks = [
       fetchFromTavilyStrict(primaryPhrase, 'google', 'faq', isEnglishPage, options?.pageType),
       fetchFromTavilyStrict(primaryPhrase, 'google', 'cons', isEnglishPage, options?.pageType),
@@ -639,6 +662,16 @@ export async function fetchSearchQuestions(
       isRelevantToKeywords(q.text, essentialTokens, Math.min(2, essentialTokens.length))
     );
     const filteredQuestions = relevantQuestions.filter((q) => q.text.length > 5);
+
+    if (filteredQuestions.length > 0) {
+      await saveQuestionResearchCache({
+        cacheKey,
+        normalizedUrl,
+        primaryPhrase,
+        pageType: options?.pageType,
+        questions: filteredQuestions,
+      });
+    }
 
     return filteredQuestions;
   } catch (error) {

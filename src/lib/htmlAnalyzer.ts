@@ -2,7 +2,6 @@ import * as cheerio from 'cheerio';
 import type { AnalysisMeta, ContentQuality, TrustSignals } from './analysisTypes';
 import { extractSupplementalTextFromJsonLd } from './articleExtraction';
 import { countProductSpecBlocks } from './paragraphAnalyzer';
-import { extractVideoId } from './youtubeMetadataExtractor';
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -436,55 +435,3 @@ function extractQuestions(text: string, headings: string[] = []): string[] {
   return questions;
 }
 
-/**
- * URL을 정규화합니다 (캐시 키로 사용).
- * - 프로토콜은 https://로 통일
- * - www. 제거
- * - trailing slash 제거
- * - utm_ 파라미터 제거
- */
-export function normalizeUrl(url: string): string {
-  try {
-    const urlObj = new URL(url);
-
-    // 프로토콜을 https로 통일
-    urlObj.protocol = 'https:';
-
-    // www. 제거
-    urlObj.hostname = urlObj.hostname.replace(/^www\./, '');
-
-    // utm_ 파라미터 제거
-    const params = new URLSearchParams(urlObj.search);
-    const keysToDelete: string[] = [];
-    
-    params.forEach((_, key) => {
-      if (key.startsWith('utm_')) {
-        keysToDelete.push(key);
-      }
-    });
-
-    keysToDelete.forEach(key => params.delete(key));
-    urlObj.search = params.toString();
-
-    // YouTube canonicalization: normalize watch/shorts/youtu.be to canonical watch URL
-    try {
-      const vid = extractVideoId(url);
-      if (vid) {
-        return `https://www.youtube.com/watch?v=${vid}`;
-      }
-    } catch {
-      // ignore and fall back to general normalization
-    }
-
-    // trailing slash 제거
-    let normalized = urlObj.toString();
-    if (normalized.endsWith('/') && urlObj.pathname !== '/') {
-      normalized = normalized.slice(0, -1);
-    }
-
-    return normalized;
-  } catch (error) {
-    // URL 파싱 실패 시 원본 반환
-    return url;
-  }
-}

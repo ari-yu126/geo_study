@@ -119,13 +119,35 @@ export interface GeoPredictedQuestion {
 }
 
 /** LLM(Gemini) 기능별 호출 상태 추적 */
-export type LlmFeature = 'recommendations' | 'citations' | 'videoAnalysis' | 'geoConfigUpdate' | 'coverageVerify';
+export type LlmFeature =
+  | 'recommendations'
+  | 'citations'
+  | 'videoAnalysis'
+  | 'geoConfigUpdate'
+  | 'coverageVerify'
+  /** User-triggered AI Writing Assistant (not part of Recommendation engine) */
+  | 'aiWritingExamples';
 export interface LlmCallStatus {
   feature: LlmFeature;
   status: 'ok' | 'skipped_quota' | 'error';
   retryAfterSec?: number;
   /** 사용자 노출 메시지: rate-limit / quota-disabled 구분 */
   message?: string;
+}
+
+/** Internal trace for deterministic recommendations (explainability / debugging). */
+export interface GeoRecommendationTraceEntry {
+  target: 'trendSummary' | 'contentGapSummary' | 'heading' | 'block' | 'priorityNote' | 'predictedQuestions';
+  /** Stable refs: issue:<id>, opportunity:<id>, axis:<name>, rule:<id>, signal:<name> */
+  sources: string[];
+  index?: number;
+}
+
+export interface GeoRecommendationTrace {
+  locale: 'ko' | 'en';
+  reviewCategory: 'none' | 'electronics' | 'physical_goods' | 'unknown';
+  reviewCategoryConfidence: 'low' | 'high';
+  entries: GeoRecommendationTraceEntry[];
 }
 
 export interface GeoRecommendations {
@@ -142,12 +164,16 @@ export interface GeoRecommendations {
   predictedUncoveredTop3?: GeoPredictedQuestion[];
   /** 규칙 기반 템플릿 추천(쿼터 제한 시 대체) */
   isTemplateFallback?: boolean;
+  /** Deterministic engine: why headings/blocks/summaries were emitted */
+  trace?: GeoRecommendationTrace;
 }
 
 export interface AnalysisResult {
   url: string;
   normalizedUrl: string;
   analyzedAt: string;
+  /** Active `geo_scoring_config.version` at analysis time — used for cache invalidation when config changes */
+  geoConfigVersion?: string | null;
   /** 페이지 타입 (editorial/video/commerce) — profiles[pageType] 선택용 */
   pageType?: PageType;
   /**
@@ -159,6 +185,10 @@ export interface AnalysisResult {
   meta: AnalysisMeta;
   seedKeywords: SeedKeyword[];
   pageQuestions: string[];
+  /** Raw search/community titles & snippets (evidence); scoring uses canonicalSearchQuestions */
+  searchEvidence?: SearchQuestion[];
+  /** Question-like intents derived for questionCoverage / questionMatch (not raw SERP strings) */
+  canonicalSearchQuestions?: SearchQuestion[];
   searchQuestions: SearchQuestion[];
   searchQuestionCovered?: boolean[];
   questionClusters: QuestionCluster[];

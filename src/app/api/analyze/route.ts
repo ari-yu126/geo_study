@@ -1,8 +1,15 @@
 import { NextResponse } from 'next/server';
-import { normalizeUrl } from '@/lib/htmlAnalyzer';
+import { normalizeUrl } from '@/lib/normalizeUrl';
 import { runAnalysis } from '@/lib/runAnalysis';
 import type { AnalysisResult } from '@/lib/analysisTypes';
+import {
+  getMemoryCachedAnalysis,
+  setMemoryCachedAnalysis,
+} from '@/lib/serverAnalysisMemoryCache';
 import { supabase, supabaseAdmin, isSupabaseReachable } from '@/lib/supabase';
+import { isAnalysisCacheEntryValid } from '@/lib/geoCacheTtl';
+import { loadActiveScoringConfig } from '@/lib/scoringConfigLoader';
+import { saveGeoAnalysisResult } from '@/lib/saveGeoAnalysisResult';
 
 // 타입들을 외부에서도 사용할 수 있도록 re-export
 export type { 
@@ -19,25 +26,30 @@ export type {
 // Analysis uses only loadActiveScoringConfig() (read active row). It never rebuilds GEO config,
 // never POSTs /api/geo-config/update, and never runs Gemini for monthly criteria generation.
 
+/** Normalize `geoConfigVersion` on API responses (legacy cached rows may omit the field). */
+function withResolvedGeoConfigVersion(
+  r: AnalysisResult,
+  currentGeoConfigVersion: string | null
+): AnalysisResult {
+  return { ...r, geoConfigVersion: r.geoConfigVersion ?? currentGeoConfigVersion ?? null };
+}
+
 // TODO: analysis_history 테이블 컬럼명이 다를 경우 이 부분을 실제 스키마에 맞게 조정할 것
 /**
  * Supabase에서 캐시된 분석 결과를 조회합니다.
- * 24시간 이내의 결과만 캐시로 인정합니다.
+ * Valid only when updated_at is within 24h and result.geoConfigVersion matches active config.
  */
 async function getCachedAnalysis(
-  normalizedUrl: string
+  normalizedUrl: string,
+  currentGeoConfigVersion: string | null
 ): Promise<AnalysisResult | null> {
   const reachable = await isSupabaseReachable();
   if (!reachable) return null;
-
-  const oneDayAgo = new Date();
-  oneDayAgo.setDate(oneDayAgo.getDate() - 1);
 
   const { data, error } = await supabase
     .from('analysis_history')
     .select('result_json, updated_at')
     .eq('normalized_url', normalizedUrl)
-    .gte('updated_at', oneDayAgo.toISOString())
     .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -45,7 +57,18 @@ async function getCachedAnalysis(
   if (error) return null;
   if (!data || !data.result_json) return null;
 
-  return data.result_json as AnalysisResult;
+  const result = data.result_json as AnalysisResult;
+  if (
+    !isAnalysisCacheEntryValid({
+      updatedAtIso: data.updated_at as string,
+      cachedGeoConfigVersion: result.geoConfigVersion,
+      currentActiveGeoConfigVersion: currentGeoConfigVersion,
+    })
+  ) {
+    return null;
+  }
+
+  return result;
 }
 
 // TODO: analysis_history 테이블 컬럼명이 다를 경우 이 부분을 실제 스키마에 맞게 조정할 것
@@ -67,7 +90,7 @@ async function saveAnalysisResult(result: AnalysisResult): Promise<void> {
     });
   }
 
-  await supabase
+  const hist = await supabase
     .from('analysis_history')
     .upsert(
       {
@@ -82,9 +105,11 @@ async function saveAnalysisResult(result: AnalysisResult): Promise<void> {
         onConflict: 'normalized_url',
       }
     );
-  // Check upsert result for errors and log details to help debugging when saves silently fail.
+  if (hist.error) {
+    console.warn('analysis_history upsert error:', hist.error, { normalizedUrl });
+  }
+
   try {
-    // supabase-js returns { data, error } — re-run a lightweight select to verify persistence if needed.
     const check = await supabase
       .from('analysis_history')
       .select('id,updated_at')
@@ -93,65 +118,32 @@ async function saveAnalysisResult(result: AnalysisResult): Promise<void> {
       .limit(1)
       .maybeSingle();
     if (check.error) {
-      console.warn('Supabase upsert/check error:', check.error, { normalizedUrl });
+      console.warn('Supabase analysis_history select error:', check.error, { normalizedUrl });
     }
-    // If we have a persisted analysis_history id, attempt to insert normalized result row.
+
     const analysisHistoryId: string | null = check.data?.id ?? null;
-    try {
-      const dbClient = supabaseAdmin ?? supabase;
 
-      // Read active config version (prefer admin client)
-      const cfgRes = await dbClient
-        .from('geo_scoring_config')
-        .select('version')
-        .eq('is_active', true)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      const configVersion = cfgRes.data?.version ?? null;
+    const dbClient = supabaseAdmin ?? supabase;
+    const cfgRes = await dbClient
+      .from('geo_scoring_config')
+      .select('version')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const configVersion = result.geoConfigVersion ?? cfgRes.data?.version ?? null;
 
-      // Build insert payload for geo_analysis_results
-      const insertPayload: any = {
-        url,
-        normalized_url: normalizedUrl,
-        page_type: result.pageType ?? 'editorial',
-        config_version: configVersion,
-        geo_score: scores.finalScore,
-        score_structure: scores.structureScore ?? null,
-        score_answerability: scores.answerabilityScore ?? null,
-        score_trust: scores.trustScore ?? null,
-        score_citation: scores.citationScore ?? null,
-        score_question_coverage: scores.questionCoverage ?? null,
-        result_json: safeResult,
-        issues_json: (result.auditIssues ?? null),
-        passed_checks_json: (result.passedChecks ?? null),
-        title: result.meta?.title ?? null,
-        engine_version: process.env.GEO_ENGINE_VERSION ?? null,
-        status: result.limitedAnalysis ? 'partial' : 'success',
-        error_message: null,
-        source_analysis_id: analysisHistoryId,
-        citation_likelihood: null,
-        notes: null,
-        created_at: new Date().toISOString(),
-      };
-
-      const ins = await dbClient
-        .from('geo_analysis_results')
-        .insert(insertPayload)
-        .select('id')
-        .limit(1);
-
-      if (ins.error) {
-        console.warn('Failed to insert geo_analysis_results:', {
-          message: ins.error.message,
-          details: (ins.error as any).details,
-        });
-      }
-    } catch (err) {
-      console.warn('geo_analysis_results insert threw:', err);
+    const persistResult = await saveGeoAnalysisResult({
+      result,
+      safeResult,
+      sourceAnalysisId: analysisHistoryId,
+      configVersion,
+    });
+    if (!persistResult.ok) {
+      console.warn('[geo_analysis_results] persist failed', persistResult);
     }
   } catch (err) {
-    console.warn('Supabase upsert/check threw:', err);
+    console.warn('saveAnalysisResult geo_analysis_results follow-up threw:', err);
   }
 }
 
@@ -171,15 +163,81 @@ export async function POST(req: Request) {
 
     const forceRefresh = body.forceRefresh === true;
 
+    const currentGeoConfigVersion = (await loadActiveScoringConfig()).version ?? null;
+
+    if (forceRefresh) {
+      console.log(
+        '[CACHE] analyze',
+        JSON.stringify({
+          bypassReason: 'forceRefresh',
+          normalizedUrl,
+          memoryAndSupabaseCachesSkipped: true,
+        })
+      );
+    }
+
   if (!forceRefresh) {
-      const cached = await getCachedAnalysis(normalizedUrl);
-      if (cached && cached.scores?.answerabilityScore !== undefined) {
+      const memHit = getMemoryCachedAnalysis(normalizedUrl, currentGeoConfigVersion);
+      if (memHit && memHit.scores?.answerabilityScore !== undefined) {
+        console.log(
+          '[CACHE]',
+          JSON.stringify({
+            endpoint: '/api/analyze',
+            layer: 'memory',
+            normalizedUrl,
+            hit: true,
+            contentImprovementGuideEmbedded: true,
+          })
+        );
         console.log(
           '[GEMINI_TRACE]',
           JSON.stringify({
             endpoint: '/api/analyze',
             normalizedUrl,
             apiAnalyzeCacheHit: true,
+            cacheLayer: 'memory',
+            skippedDueToCachedAnalysis: true,
+            runAnalysisInvoked: false,
+            allGeminiGenerateContentSkipped: true,
+          })
+        );
+        const safeMem = { ...memHit } as AnalysisResult;
+        if (Array.isArray(safeMem.llmStatuses)) {
+          safeMem.llmStatuses = safeMem.llmStatuses.map((s) => {
+            const { message, ...rest } = s as any;
+            return rest as any;
+          });
+        }
+        return NextResponse.json(
+          {
+            fromCache: true,
+            cacheLayer: 'memory',
+            result: withResolvedGeoConfigVersion(safeMem, currentGeoConfigVersion),
+          },
+          { status: 200 }
+        );
+      }
+
+      const cached = await getCachedAnalysis(normalizedUrl, currentGeoConfigVersion);
+      if (cached && cached.scores?.answerabilityScore !== undefined) {
+        setMemoryCachedAnalysis(normalizedUrl, cached);
+        console.log(
+          '[CACHE]',
+          JSON.stringify({
+            endpoint: '/api/analyze',
+            layer: 'supabase',
+            normalizedUrl,
+            hit: true,
+            contentImprovementGuideEmbedded: true,
+          })
+        );
+        console.log(
+          '[GEMINI_TRACE]',
+          JSON.stringify({
+            endpoint: '/api/analyze',
+            normalizedUrl,
+            apiAnalyzeCacheHit: true,
+            cacheLayer: 'supabase',
             skippedDueToCachedAnalysis: true,
             runAnalysisInvoked: false,
             allGeminiGenerateContentSkipped: true,
@@ -194,7 +252,11 @@ export async function POST(req: Request) {
           });
         }
         return NextResponse.json(
-          { fromCache: true, result: safeCached },
+          {
+            fromCache: true,
+            cacheLayer: 'supabase',
+            result: withResolvedGeoConfigVersion(safeCached, currentGeoConfigVersion),
+          },
           { status: 200 }
         );
       }
@@ -215,6 +277,8 @@ export async function POST(req: Request) {
     const appOrigin = typeof req.url === 'string' ? new URL(req.url).origin : undefined;
     const result = await runAnalysis(url, { appOrigin });
 
+    setMemoryCachedAnalysis(normalizedUrl, result);
+
     // 3) DB에 저장 (실패해도 분석 결과는 반환)
     try {
       await saveAnalysisResult(result);
@@ -223,7 +287,11 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json(
-      { fromCache: false, result },
+      {
+        fromCache: false,
+        cacheLayer: 'none',
+        result: withResolvedGeoConfigVersion(result, currentGeoConfigVersion),
+      },
       { status: 200 }
     );
   } catch (err: any) {

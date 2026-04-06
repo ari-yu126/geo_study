@@ -16,6 +16,7 @@ import {
   Sparkles,
   Search,
   Star,
+  ExternalLink,
 } from "lucide-react";
 import type {
   AnalysisResult,
@@ -36,8 +37,22 @@ import {
   hasGeoExplain,
   IMPACT_LABEL,
   EDITORIAL_SUBTYPE_LABEL,
-  editorialSubtypeTooltip,
 } from "../utils/geoExplainUi";
+import type { GeoAxis } from "@/lib/analysisTypes";
+import type {
+  AiWritingExamplesApiResponse,
+  AiWritingExamplesData,
+  AiWritingExamplesPageType,
+} from "@/lib/aiWritingExamplesTypes";
+import { buildFallbackAiWritingExamples } from "@/lib/aiWritingExamplesFallback";
+import { AI_WRITING_QUOTA_NOTICE } from "@/lib/aiWritingExamplesMessages";
+import { readAiWritingCache, writeAiWritingCache } from "@/app/utils/aiWritingExamplesClientCache";
+import {
+  AI_WRITING_ASSISTANT_UI,
+  CONTENT_FOCUS_LABEL,
+  getRecommendationLocale,
+  RECOMMENDATION_SECTION_LABELS,
+} from "@/lib/recommendations/recommendationUiLabels";
 import ScoreGauge, { getGradeInfo } from "./ScoreGauge";
 
 const PRIORITY_COLORS: Record<string, { color: string; bg: string; border: string; label: string }> = {
@@ -54,6 +69,7 @@ function GeoIssueCard({
   auditIssueById,
   showDebugRefs,
   hideCategoryBadge,
+  axisFriendlyLabel,
 }: {
   g: GeoIssue;
   issueNum: number;
@@ -62,6 +78,8 @@ function GeoIssueCard({
   auditIssueById: (id: string) => AuditIssue | undefined;
   showDebugRefs: boolean;
   hideCategoryBadge?: boolean;
+  /** User-facing focus label (no internal axis ids). */
+  axisFriendlyLabel?: string;
 }) {
   const cfg = PRIORITY_COLORS[g.severity];
   const isActive = activeIssueId === g.id;
@@ -138,7 +156,7 @@ function GeoIssueCard({
                 fontFamily: "var(--font-mono)",
               }}
             >
-              {GEO_AXIS_LABEL[g.axis] ?? g.axis}
+              {axisFriendlyLabel ?? GEO_AXIS_LABEL[g.axis] ?? g.axis}
             </span>
             {(hasFixExamples || g.fix?.trim()) &&
               (isActive ? <ChevronUp size={14} style={{ color: "#5b6ef5", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />)}
@@ -371,15 +389,24 @@ function pageEvalStandard(pageType?: AnalysisResult["pageType"]) {
   }
 }
 
+const SEARCH_SOURCE_LABEL: Record<string, string> = {
+  google: "Google",
+  naver: "Naver",
+  community: "커뮤니티",
+};
+
 interface AuditPanelProps {
   result: AnalysisResult;
+  /** Last /api/analyze response: cache hit layer for demo status */
+  analyzeMeta?: { fromCache: boolean; cacheLayer: string } | null;
   issues: AuditIssue[];
   passedChecks: PassedCheck[];
   activeIssueId: string | null;
   onIssueClick: (id: string) => void;
   onReset: () => void;
   onExportPPT: () => void;
-  onNavigate: (url: string) => void;
+  /** `forceRefresh: true` bypasses memory + Supabase cache (explicit re-analyze only). */
+  onNavigate: (url: string, options?: { forceRefresh?: boolean }) => void;
   onQuestionClick?: (questionText: string) => void;
   onPassedCheckClick?: (pc: PassedCheck) => void;
   exporting: boolean;
@@ -421,6 +448,29 @@ function buildCategories(result: AnalysisResult) {
 
 const INITIAL_QUESTIONS = 3;
 
+function mapAiWritingPageType(r: AnalysisResult): AiWritingExamplesPageType {
+  const pt = r.pageType ?? "editorial";
+  if (pt === "video") return "video";
+  if (pt === "commerce") return "commerce";
+  if (r.reviewLike) return "review";
+  if (r.editorialSubtype === "site_info") return "site_info";
+  return "editorial";
+}
+
+function buildAiWritingContentSnippet(r: AnalysisResult): string {
+  const parts: string[] = [];
+  const d0 = r.meta.description?.trim();
+  if (d0) parts.push(d0);
+  const og = r.meta.ogDescription?.trim();
+  if (og && og !== d0) parts.push(og);
+  const chunkText = (r.chunkCitations ?? [])
+    .slice(0, 12)
+    .map((c) => c.text)
+    .join("\n\n");
+  if (chunkText) parts.push(chunkText);
+  return parts.join("\n\n").slice(0, 14000);
+}
+
 const CARD_STYLE = {
   padding: "14px 16px",
   borderRadius: 12,
@@ -429,7 +479,17 @@ const CARD_STYLE = {
   boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
 } as const;
 
-function CopyableBlock({ children, label }: { children: string; label?: string }) {
+function CopyableBlock({
+  children,
+  label,
+  copyLabel = "복사",
+  copiedLabel = "복사됨",
+}: {
+  children: string;
+  label?: string;
+  copyLabel?: string;
+  copiedLabel?: string;
+}) {
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(async () => {
     try {
@@ -472,18 +532,30 @@ function CopyableBlock({ children, label }: { children: string; label?: string }
           transition: "all 0.15s",
         }}
       >
-        {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? "복사됨" : "복사"}
+        {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? copiedLabel : copyLabel}
       </button>
       {label && (
         <div style={{ fontSize: 11, fontWeight: 600, color: "#7a8da3", marginBottom: 4 }}>{label}</div>
       )}
-      <div style={{ paddingRight: 60, fontSize: 12, color: "#c4d0e0", lineHeight: 1.6 }}>{children}</div>
+      <div
+        style={{
+          paddingRight: 60,
+          fontSize: 12,
+          color: "#c4d0e0",
+          lineHeight: 1.6,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
 
 export default function AuditPanel({
   result,
+  analyzeMeta,
   issues,
   passedChecks,
   activeIssueId,
@@ -503,10 +575,20 @@ export default function AuditPanel({
   const [urlInput, setUrlInput] = useState(result.url);
   const [questionsExpanded, setQuestionsExpanded] = useState(false);
   const [opportunitiesOpen, setOpportunitiesOpen] = useState(true);
+  const [aiWritingExamplesOpen, setAiWritingExamplesOpen] = useState(false);
+  const [aiWritingExamplesLoading, setAiWritingExamplesLoading] = useState(false);
+  const [aiWritingExamplesError, setAiWritingExamplesError] = useState<string | null>(null);
+  const [aiWritingExamplesData, setAiWritingExamplesData] = useState<AiWritingExamplesData | null>(null);
+  const [aiWritingNotice, setAiWritingNotice] = useState<string | null>(null);
+  const [aiWritingDegraded, setAiWritingDegraded] = useState(false);
+  const [aiWritingFromCache, setAiWritingFromCache] = useState(false);
+  const lastAiWritingFetchAtRef = useRef<Record<string, number>>({});
 
   const [configVersion, setConfigVersion] = useState<string | null>(null);
   const [configCreatedAt, setConfigCreatedAt] = useState<string | null>(null);
   const [configDaysLeft, setConfigDaysLeft] = useState<number | null>(null);
+  const [monthlyResearchLines, setMonthlyResearchLines] = useState<string[]>([]);
+  const [researchSourcesOpen, setResearchSourcesOpen] = useState(false);
 
   // Fetch latest active AI config metadata for badge display
   const mountedRef = useRef(true);
@@ -522,6 +604,12 @@ export default function AuditPanel({
         if (data?.version) setConfigVersion(String(data.version));
         if (data?.created_at) setConfigCreatedAt(String(data.created_at));
         if (typeof data?.days_until_next_update === 'number') setConfigDaysLeft(data.days_until_next_update);
+        const cfg = data?.config as { source_summary?: string[] } | undefined;
+        if (Array.isArray(cfg?.source_summary)) {
+          setMonthlyResearchLines(cfg.source_summary.map((s) => String(s).trim()).filter(Boolean));
+        } else {
+          setMonthlyResearchLines([]);
+        }
       } catch {
         // silent
       }
@@ -531,6 +619,130 @@ export default function AuditPanel({
       controller.abort();
     };
   }, []);
+
+  useEffect(() => {
+    setAiWritingExamplesOpen(false);
+    setAiWritingExamplesLoading(false);
+    setAiWritingExamplesError(null);
+    setAiWritingExamplesData(null);
+    setAiWritingNotice(null);
+    setAiWritingDegraded(false);
+    setAiWritingFromCache(false);
+  }, [result.normalizedUrl]);
+
+  const AI_WRITING_FETCH_COOLDOWN_MS = 4000;
+
+  const requestAiWritingExamples = useCallback(async () => {
+    const loc = getRecommendationLocale(result.recommendations?.trace?.locale, result.meta, "");
+    const aiAssistLocal = AI_WRITING_ASSISTANT_UI[loc];
+    const urlKey = result.normalizedUrl;
+
+    setAiWritingExamplesOpen(true);
+    setAiWritingExamplesLoading(true);
+    setAiWritingExamplesError(null);
+
+    const title = result.meta.title?.trim() || result.meta.ogTitle?.trim() || "";
+    const body = {
+      url: result.url,
+      title,
+      contentSnippet: buildAiWritingContentSnippet(result),
+      pageType: mapAiWritingPageType(result),
+      questions: (result.searchQuestions ?? []).map((q) => q.text),
+      recommendedSections: result.recommendations?.actionPlan.suggestedHeadings ?? [],
+      locale: loc,
+    };
+
+    const cached = readAiWritingCache(urlKey);
+    if (cached) {
+      console.log("[AI WRITING FETCH SKIPPED - USING EXISTING STATE]");
+      setAiWritingExamplesData(cached.data);
+      setAiWritingNotice(cached.notice ?? null);
+      setAiWritingDegraded(Boolean(cached.degraded));
+      setAiWritingFromCache(true);
+      setAiWritingExamplesError(null);
+      setAiWritingExamplesLoading(false);
+      return;
+    }
+
+    setAiWritingFromCache(false);
+    const lastFetch = lastAiWritingFetchAtRef.current[urlKey] ?? 0;
+    if (Date.now() - lastFetch < AI_WRITING_FETCH_COOLDOWN_MS && lastFetch > 0) {
+      setAiWritingExamplesError(aiAssistLocal.rateLimitWait);
+      setAiWritingExamplesLoading(false);
+      return;
+    }
+    lastAiWritingFetchAtRef.current[urlKey] = Date.now();
+
+    setAiWritingNotice(null);
+    setAiWritingDegraded(false);
+
+    try {
+      const requestBody = body;
+      console.log("[AI WRITING FETCH START]", requestBody);
+      const res = await fetch("/api/ai-writing-examples", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      console.log("[AI WRITING FETCH RESPONSE STATUS]", res.status);
+      const json = (await res.json()) as AiWritingExamplesApiResponse & { error?: string };
+      console.log("[AI WRITING FETCH RESPONSE JSON]", json);
+
+      if (!res.ok) {
+        setAiWritingExamplesError(json.error ?? ("message" in json ? json.message : undefined) ?? "Request failed");
+        return;
+      }
+
+      if (json.aiAvailable && json.data) {
+        setAiWritingExamplesData(json.data);
+        setAiWritingNotice(json.notice ?? null);
+        setAiWritingDegraded(Boolean(json.degraded));
+        writeAiWritingCache(urlKey, {
+          data: json.data,
+          notice: json.notice ?? null,
+          degraded: json.degraded,
+        });
+        setAiWritingExamplesError(null);
+        return;
+      }
+
+      if (!json.aiAvailable && json.reason === "quota") {
+        const fb = buildFallbackAiWritingExamples(body, loc);
+        setAiWritingExamplesData(fb);
+        setAiWritingNotice(AI_WRITING_QUOTA_NOTICE[loc]);
+        setAiWritingDegraded(true);
+        writeAiWritingCache(urlKey, {
+          data: fb,
+          notice: AI_WRITING_QUOTA_NOTICE[loc],
+          degraded: true,
+        });
+        setAiWritingExamplesError(null);
+        return;
+      }
+
+      if (!json.aiAvailable) {
+        const parts = [
+          json.message ?? "AI writing examples are not available.",
+          json.keySource === "dedicated"
+            ? "(키: 무료 전용)"
+            : json.keySource === "paid_fallback"
+              ? "(키: 유료 폴백 — GEMINI_WRITING_EXAMPLES_API_KEY 비어 있음)"
+              : json.keySource === "none"
+                ? "(키 없음)"
+                : "",
+          json.detail ? `— ${json.detail}` : "",
+        ].filter(Boolean);
+        setAiWritingExamplesError(parts.join(" "));
+        return;
+      }
+
+      setAiWritingExamplesError("Invalid response from server.");
+    } catch {
+      setAiWritingExamplesError("Network error. Please try again.");
+    } finally {
+      setAiWritingExamplesLoading(false);
+    }
+  }, [result]);
 
   const goldenParagraphs = (result.chunkCitations ?? [])
     .slice()
@@ -563,6 +775,11 @@ export default function AuditPanel({
 
   const strengthRows = getStrengthRows(result, passedChecks);
   const axisRows = getAxisRows(result);
+  const recLocale = getRecommendationLocale(result.recommendations?.trace?.locale, result.meta, "");
+  const sec = RECOMMENDATION_SECTION_LABELS[recLocale];
+  const aiAssist = AI_WRITING_ASSISTANT_UI[recLocale];
+  const focusByAxis = CONTENT_FOCUS_LABEL[recLocale];
+  const copyUi = recLocale === "en" ? { copy: "Copy", copied: "Copied" } : { copy: "복사", copied: "복사됨" };
   const opportunities = geoExplain?.opportunities ?? [];
   const showDebugRefs = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
@@ -587,18 +804,49 @@ export default function AuditPanel({
       {/* 헤더 - 고정 */}
       <div style={{ padding: "14px 16px 10px", borderBottom: "1px solid #1e2d45" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 12, color: "#818cf8", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
-              GEO Analyzer
-            </span>
-              {configVersion ? (
-                <span style={{ fontSize: 11, color: "#7a8da3", marginLeft: 8 }}>
-                  Scored using Monthly AI GEO Criteria (Updated {configCreatedAt ? new Date(configCreatedAt).toISOString().slice(0,10).replace(/-/g,'.') : configVersion})
-                  {configDaysLeft != null ? ` · ${configDaysLeft}d left` : ''}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start", maxWidth: "calc(100% - 88px)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "#818cf8", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                GEO Analyzer
+              </span>
+              {analyzeMeta && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: "2px 8px",
+                    borderRadius: 4,
+                    background: analyzeMeta.fromCache ? "rgba(52,211,153,0.12)" : "rgba(91,110,245,0.15)",
+                    color: analyzeMeta.fromCache ? "#34d399" : "#a5b4fc",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  {analyzeMeta.fromCache
+                    ? analyzeMeta.cacheLayer === "memory"
+                      ? "캐시 · 메모리"
+                      : analyzeMeta.cacheLayer === "supabase"
+                        ? "캐시 · 저장소"
+                        : "캐시"
+                    : "실시간 분석"}
                 </span>
-              ) : (
-                <span style={{ fontSize: 11, color: "#7a8da3", marginLeft: 8 }}>Scoring Engine: v26.03 Commerce Update</span>
               )}
+            </div>
+            <div style={{ fontSize: 11, color: "#7a8da3", lineHeight: 1.45 }}>
+              <span style={{ color: "#9ca3af" }}>월간 GEO 기준</span>
+              {" · "}
+              <span style={{ fontFamily: "var(--font-mono)", color: "#c4d0e0" }}>
+                v{configVersion ?? result.geoConfigVersion ?? "—"}
+              </span>
+              {configCreatedAt && (
+                <span>
+                  {" "}
+                  · 갱신{" "}
+                  {new Date(configCreatedAt)
+                    .toLocaleDateString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" })
+                    .replace(/\s/g, "")}
+                </span>
+              )}
+              {configDaysLeft != null && <span> · 다음 기준 갱신까지 약 {configDaysLeft}일</span>}
+            </div>
           </div>
           <button
             onClick={onReset}
@@ -622,7 +870,7 @@ export default function AuditPanel({
             const trimmed = urlInput.trim();
             if (trimmed && trimmed !== result.url) onNavigate(trimmed);
           }}
-          style={{ display: "flex", gap: 4, alignItems: "center" }}
+          style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}
         >
           <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
             {reanalyzing && (
@@ -671,6 +919,29 @@ export default function AuditPanel({
           >
             분석
           </button>
+          <button
+            type="button"
+            disabled={reanalyzing}
+            title="캐시를 쓰지 않고 이 URL을 처음부터 다시 분석합니다"
+            onClick={() => {
+              onNavigate(result.url, { forceRefresh: true });
+            }}
+            style={{
+              flexShrink: 0,
+              padding: "6px 10px",
+              borderRadius: 6,
+              background: "transparent",
+              border: "1px solid #3d4f6f",
+              color: "#a8c4e8",
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: reanalyzing ? "not-allowed" : "pointer",
+              opacity: reanalyzing ? 0.5 : 1,
+              fontFamily: "var(--font-body)",
+            }}
+          >
+            다시 분석
+          </button>
         </form>
         {(() => {
           const ev = pageEvalStandard(result.pageType);
@@ -684,9 +955,10 @@ export default function AuditPanel({
                   border: `1px solid ${ev.color}44`,
                   background: `${ev.color}10`,
                   display: "flex",
-                  alignItems: "center",
+                  alignItems: "flex-start",
                   gap: 8,
                   flexWrap: "wrap",
+                  flexDirection: "column",
                 }}
               >
                 <div style={{
@@ -705,7 +977,7 @@ export default function AuditPanel({
                     </span>
                   )}
                 </div>
-                <span style={{ fontSize: 11, color: "#8b9cb3", flex: 1, minWidth: 140 }}>{ev.hint}</span>
+                <div style={{ fontSize: 11, color: "#8b9cb3", flex: 1, minWidth: 140 }}>{ev.hint}</div>
               </div>
             </>
           );
@@ -724,6 +996,60 @@ export default function AuditPanel({
           padding: "16px 12px 20px",
         }}
       >
+      {monthlyResearchLines.length > 0 && (
+        <div style={CARD_STYLE}>
+          <button
+            type="button"
+            onClick={() => setResearchSourcesOpen((v) => !v)}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "4px 0 8px",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <ExternalLink size={16} style={{ color: "#5b6ef5" }} />
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#e8edf5" }}>월간 GEO 리서치 출처</span>
+              <span style={{ fontSize: 10, color: "#6d8099", fontFamily: "var(--font-mono)" }}>
+                ({monthlyResearchLines.length})
+              </span>
+            </div>
+            {researchSourcesOpen ? <ChevronUp size={16} color="#7a8da3" /> : <ChevronDown size={16} color="#7a8da3" />}
+          </button>
+          {researchSourcesOpen && (
+            <ul style={{ margin: 0, padding: "0 0 0 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+              {monthlyResearchLines.map((line, i) => {
+                const m = line.match(/(https?:\/\/[^\s<]+[^\s<.,;)]?)/);
+                if (!m) {
+                  return (
+                    <li key={`mr-${i}`} style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.5 }}>
+                      {line}
+                    </li>
+                  );
+                }
+                const url = m[1] ?? m[0];
+                const parts = line.split(url);
+                const after = parts.length > 1 ? parts.slice(1).join(url) : "";
+                return (
+                  <li key={`mr-${i}`} style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.5 }}>
+                    {parts[0]}
+                    <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "#00d4c8", wordBreak: "break-all" }}>
+                      {url}
+                    </a>
+                    {after}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
       {/* 쿼터 제한 알림 (상단 고정) */}
       {result.llmStatuses?.some((s) => s.status === "skipped_quota") && (
         <div
@@ -812,7 +1138,7 @@ export default function AuditPanel({
       {axisRows.length > 0 && (
         <div style={CARD_STYLE}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
-            축 점수 (0–100)
+            세부 점수 (0–100)
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 12px" }}>
             {axisRows.map((row) => (
@@ -1012,6 +1338,7 @@ export default function AuditPanel({
                           auditIssueById={auditIssueById}
                           showDebugRefs={showDebugRefs}
                           hideCategoryBadge
+                          axisFriendlyLabel={focusByAxis[g.axis as GeoAxis] ?? GEO_AXIS_LABEL[g.axis] ?? g.axis}
                         />
                       ))}
                     </div>
@@ -1102,8 +1429,8 @@ export default function AuditPanel({
         </div>
       </div>
 
-      {/* 5. 개선 기회 / Opportunities */}
-      {opportunities.length > 0 && (
+      {/* 5. 개선 기회 — 숨김 when rule-based recommendations exist (actions live in Priority Actions only). */}
+      {opportunities.length > 0 && !result.recommendations && (
         <div style={CARD_STYLE}>
           <button
             type="button"
@@ -1145,7 +1472,7 @@ export default function AuditPanel({
                         {IMPACT_LABEL[opp.impact] ?? opp.impact}
                       </span>
                       <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(91,110,245,0.12)", color: "#a5b4fc", fontFamily: "var(--font-mono)" }}>
-                        {GEO_AXIS_LABEL[opp.improvesAxis] ?? opp.improvesAxis}
+                        {focusByAxis[opp.improvesAxis] ?? GEO_AXIS_LABEL[opp.improvesAxis] ?? opp.improvesAxis}
                       </span>
                       {opp.fixesIssueId && (
                         <span style={{ fontSize: 10, color: "#7a8da3", fontFamily: "var(--font-mono)" }}>↳ 이슈 {opp.fixesIssueId}</span>
@@ -1163,8 +1490,26 @@ export default function AuditPanel({
         </div>
       )}
 
-      {/* 6. AI 전략 제언 — 서술 레이어 (구조화 기회 보강) */}
-      {result.recommendations && (
+      {/* 6. 콘텐츠 개선 가이드 (요약 → 갭 → 우선 작업 → 소제목 → 블록 → 작성 예시) */}
+      {result.recommendations && (() => {
+        const rec = result.recommendations;
+        const improvementSummaryLabel =
+          result.pageType === "video"
+            ? sec.improvementSummaryVideo
+            : result.pageType === "editorial" && result.reviewLike
+              ? sec.improvementSummaryReview
+              : sec.improvementSummary;
+        const guideTitle =
+          recLocale === "en"
+            ? result.pageType === "video"
+              ? "Video description guide"
+              : "Content improvement guide"
+            : result.pageType === "video"
+              ? "영상 설명란 개선 가이드"
+              : "콘텐츠 개선 가이드";
+        const blocksJoin = "\n";
+        const blocksText = rec.actionPlan.suggestedBlocks.join(blocksJoin);
+        return (
         <div
           style={{
             ...CARD_STYLE,
@@ -1172,76 +1517,223 @@ export default function AuditPanel({
             border: "1px solid rgba(99,102,241,0.35)",
           }}
         >
-          {opportunities.length > 0 && (
-            <div style={{ fontSize: 11, color: "#a5b4fc", lineHeight: 1.5, marginBottom: 10, padding: "8px 10px", borderRadius: 6, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
-              위의 <strong style={{ color: "#e8edf5" }}>개선 기회</strong>가 우선입니다. 아래는 Gemini가 같은 맥락에서 다듬은 설명·템플릿입니다.
-            </div>
-          )}
-          여기다
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-            <Sparkles size={18} style={{ color: "#818cf8" }} />
-            <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
-              {result.pageType === "video" ? "AI 검색 최적화 설명란 전략" : result.pageType === "editorial" && result.reviewLike ? "리뷰 분석 제언" : "AI 전략 제언: 커뮤니티가 원하는 정답"}
-            </span>
-            {result.recommendations.isTemplateFallback && (
-              <span style={{ padding: "2px 8px", borderRadius: 4, background: "rgba(245,166,35,0.2)", border: "1px solid rgba(245,166,35,0.5)", color: "#f5a623", fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
-                AI 추천이 제한되어 템플릿 추천으로 대체되었습니다(쿼터 제한).
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+              <Sparkles size={18} style={{ color: "#818cf8" }} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
+                {guideTitle}
               </span>
-            )}
+              {rec.isTemplateFallback && (
+                <span style={{ padding: "2px 8px", borderRadius: 4, background: "rgba(245,166,35,0.2)", border: "1px solid rgba(245,166,35,0.5)", color: "#f5a623", fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
+                  {sec.templateFallback}
+                </span>
+              )}
+            </div>
+          </div>
+          <div style={{ fontWeight: 600, color: "#a5b4fc", fontSize: 11, marginBottom: 6, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+            {improvementSummaryLabel}
           </div>
           <div style={{ fontSize: 12, color: "#c4d0e0", lineHeight: 1.6, marginBottom: 12 }}>
-            {result.recommendations.trendSummary}
+            {rec.trendSummary}
           </div>
-          <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.6, marginBottom: 12, paddingLeft: 8, borderLeft: "2px solid #1e2d45" }}>
-            <div style={{ fontWeight: 600, color: "#7a8da3", marginBottom: 4 }}>{result.pageType === "video" ? "설명란 보강 포인트" : "콘텐츠 Gap"}</div>
-            {result.recommendations.contentGapSummary}
+          <div style={{ fontWeight: 600, color: "#a5b4fc", fontSize: 11, marginBottom: 6, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+            {sec.contentGaps}
           </div>
-          {result.pageType === "video" ? (
-            <>
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#7a8da3", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>콘텐츠 구조 (Content Structure)</div>
-                <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
-                  <CopyableBlock>{result.recommendations.actionPlan.suggestedHeadings.join("\n")}</CopyableBlock>
-                </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "#8b9cb3",
+              lineHeight: 1.65,
+              marginBottom: 12,
+              paddingLeft: 8,
+              borderLeft: "2px solid #1e2d45",
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {rec.contentGapSummary}
+          </div>
+          {rec.actionPlan.priorityNotes && rec.actionPlan.priorityNotes.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 600, color: "#f5a623", fontSize: 11, marginBottom: 8, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                {sec.priorityActions}
               </div>
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#7a8da3", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>메타데이터·링크 (Metadata / Links)</div>
-                <div style={{ fontSize: 11, color: "#8b9cb3", lineHeight: 1.5, marginBottom: 8 }}>고정 댓글에 핵심 요약 배치, 관련 링크 정리</div>
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#7a8da3", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>복사용 템플릿 (Copy-paste Templates)</div>
-                <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,200,0.06)", border: "1px solid rgba(0,212,200,0.2)" }}>
-                  <CopyableBlock>{result.recommendations.actionPlan.suggestedBlocks.join("\n\n")}</CopyableBlock>
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#818cf8", marginBottom: 6 }}>추천 H2/H3 제목</div>
-                <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
-                  <CopyableBlock>{result.recommendations.actionPlan.suggestedHeadings.join("\n")}</CopyableBlock>
-                </div>
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", marginBottom: 6 }}>추천 블록 (테이블/리스트/FAQ)</div>
-                <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,200,0.06)", border: "1px solid rgba(0,212,200,0.2)" }}>
-                  <CopyableBlock>{result.recommendations.actionPlan.suggestedBlocks.join("\n")}</CopyableBlock>
-                </div>
-              </div>
-            </>
+              <ol
+                style={{
+                  margin: 0,
+                  paddingLeft: 20,
+                  color: "#f5d7a8",
+                  fontSize: 12,
+                  fontWeight: 500,
+                  lineHeight: 1.55,
+                }}
+              >
+                {rec.actionPlan.priorityNotes.map((note, i) => (
+                  <li key={i} style={{ marginBottom: 6 }}>
+                    {note}
+                  </li>
+                ))}
+              </ol>
+            </div>
           )}
-          {result.recommendations.actionPlan.priorityNotes && result.recommendations.actionPlan.priorityNotes.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
-              {result.recommendations.actionPlan.priorityNotes.map((note, i) => (
-                <span key={i} style={{ padding: "4px 10px", borderRadius: 6, background: "rgba(245,166,35,0.15)", border: "1px solid rgba(245,166,35,0.4)", color: "#f5a623", fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)" }}>
-                  {note}
-                </span>
-              ))}
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#818cf8", marginBottom: 6 }}>{sec.recommendedHeadings}</div>
+            <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
+              <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{rec.actionPlan.suggestedHeadings.join("\n")}</CopyableBlock>
+            </div>
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", marginBottom: 6 }}>{sec.recommendedBlocks}</div>
+            {result.pageType === "video" && (
+              <div style={{ fontSize: 11, color: "#8b9cb3", lineHeight: 1.5, marginBottom: 8 }}>{sec.videoBlocksHint}</div>
+            )}
+            <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,200,0.06)", border: "1px solid rgba(0,212,200,0.2)" }}>
+              <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{blocksText}</CopyableBlock>
+            </div>
+          </div>
+          <div style={{ marginTop: 12, marginBottom: aiWritingExamplesOpen ? 10 : 0 }}>
+            <button
+              type="button"
+              disabled={aiWritingExamplesLoading}
+              onClick={() => {
+                const loc = getRecommendationLocale(
+                  result.recommendations?.trace?.locale,
+                  result.meta,
+                  ""
+                );
+                console.log("[AI WRITING BUTTON CLICKED]", {
+                  url: result.url,
+                  pageType: mapAiWritingPageType(result),
+                  locale: loc,
+                });
+                void requestAiWritingExamples();
+              }}
+              style={{
+                width: "100%",
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: "1px solid rgba(168,85,247,0.45)",
+                background: "linear-gradient(135deg, rgba(129,140,248,0.2) 0%, rgba(168,85,247,0.15) 100%)",
+                color: "#e9d5ff",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: aiWritingExamplesLoading ? "wait" : "pointer",
+                textAlign: "center",
+                fontFamily: "var(--font-body)",
+                lineHeight: 1.45,
+                opacity: aiWritingExamplesLoading ? 0.75 : 1,
+              }}
+              title={aiAssist.rateLimitWait}
+            >
+              {aiAssist.generateButton}
+            </button>
+          </div>
+          {aiWritingExamplesOpen && (
+            <div
+              style={{
+                padding: "12px 14px",
+                borderRadius: 8,
+                border: "1px solid rgba(168,85,247,0.35)",
+                background: "rgba(168,85,247,0.06)",
+                marginBottom: 4,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#c4b5fd", marginBottom: 8 }}>{aiAssist.sectionTitle}</div>
+              {aiWritingFromCache && !aiWritingExamplesLoading && (
+                <div style={{ fontSize: 11, color: "#8b9cb3", marginBottom: 8, lineHeight: 1.5 }}>{aiAssist.cachedFromSession}</div>
+              )}
+              {(aiWritingNotice || aiWritingDegraded) && !aiWritingExamplesLoading && (
+                <div
+                  style={{
+                    marginBottom: 10,
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    background: "rgba(251,191,36,0.08)",
+                    border: "1px solid rgba(251,191,36,0.25)",
+                    fontSize: 11,
+                    color: "#fcd34d",
+                    lineHeight: 1.55,
+                  }}
+                >
+                  {aiWritingDegraded ? (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        marginRight: 8,
+                        marginBottom: 2,
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                        background: "rgba(251,191,36,0.15)",
+                        fontWeight: 600,
+                        fontSize: 10,
+                        verticalAlign: "middle",
+                      }}
+                    >
+                      {aiAssist.templateFallbackBadge}
+                    </span>
+                  ) : null}
+                  {aiWritingNotice ? <span>{aiWritingNotice}</span> : null}
+                </div>
+              )}
+              {aiWritingExamplesLoading && (
+                <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55 }}>{aiAssist.loading}</div>
+              )}
+              {!aiWritingExamplesLoading && aiWritingExamplesError && (
+                <div style={{ fontSize: 12, color: "#f0a8b8", lineHeight: 1.55 }}>{aiWritingExamplesError}</div>
+              )}
+              {!aiWritingExamplesLoading && !aiWritingExamplesError && aiWritingExamplesData && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {aiWritingExamplesData.summaryExample.trim() ? (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#a78bfa", marginBottom: 4 }}>{aiAssist.summaryLabel}</div>
+                      <div style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(168,85,247,0.2)" }}>
+                        <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{aiWritingExamplesData.summaryExample}</CopyableBlock>
+                      </div>
+                    </div>
+                  ) : null}
+                  {aiWritingExamplesData.faqExamples.some((f) => f.question.trim() || f.answer.trim()) ? (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#a78bfa", marginBottom: 6 }}>{aiAssist.faqLabel}</div>
+                      {aiWritingExamplesData.faqExamples.map((f, i) => (
+                        <div key={i} style={{ marginBottom: 8, padding: "8px 10px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(168,85,247,0.2)" }}>
+                          <div style={{ fontSize: 10, fontWeight: 600, color: "#7c6bb5", marginBottom: 4 }}>{aiAssist.faqItem(i + 1)}</div>
+                          <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{`${f.question}\n\n${f.answer}`.trim()}</CopyableBlock>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {aiWritingExamplesData.prosConsExample.trim() ? (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#a78bfa", marginBottom: 4 }}>{aiAssist.prosConsLabel}</div>
+                      <div style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(168,85,247,0.2)" }}>
+                        <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{aiWritingExamplesData.prosConsExample}</CopyableBlock>
+                      </div>
+                    </div>
+                  ) : null}
+                  {aiWritingExamplesData.verdictExample.trim() ? (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#a78bfa", marginBottom: 4 }}>{aiAssist.verdictLabel}</div>
+                      <div style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(168,85,247,0.2)" }}>
+                        <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{aiWritingExamplesData.verdictExample}</CopyableBlock>
+                      </div>
+                    </div>
+                  ) : null}
+                  {aiWritingExamplesData.headingSuggestions.some((h) => h.trim()) ? (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#a78bfa", marginBottom: 4 }}>{aiAssist.headingsLabel}</div>
+                      <div style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(0,0,0,0.2)", border: "1px solid rgba(168,85,247,0.2)" }}>
+                        <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>
+                          {aiWritingExamplesData.headingSuggestions.filter((h) => h.trim()).join("\n")}
+                        </CopyableBlock>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
 
       {/* 황금 문단 */}
       {goldenParagraphs.length > 0 && (
@@ -1301,6 +1793,8 @@ export default function AuditPanel({
                   type: "user" as const,
                   text: q.text,
                   isCovered: covered[i] ?? false,
+                  source: q.source,
+                  refUrl: q.url,
                   domain: q.source === "community" ? getDomainFromUrl(q.url) : null,
                   key: `u-${i}`,
                 }));
@@ -1368,8 +1862,47 @@ export default function AuditPanel({
                           <span style={{ fontSize: 12, color: "#c4d0e0", lineHeight: 1.5 }}>
                             {item.text}
                           </span>
-                          {item.type === "user" && "domain" in item && item.domain && (
-                            <div style={{ fontSize: 10, color: "#6d8099" }}>{item.domain}</div>
+                          {item.type === "user" && (
+                            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 2 }}>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  padding: "1px 6px",
+                                  borderRadius: 4,
+                                  background: "rgba(0,212,200,0.1)",
+                                  color: "#5eead4",
+                                  fontFamily: "var(--font-mono)",
+                                }}
+                              >
+                                {SEARCH_SOURCE_LABEL[item.source] ?? item.source}
+                              </span>
+                              {"refUrl" in item && item.refUrl && (
+                                <a
+                                  href={item.refUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    fontSize: 10,
+                                    color: "#00d4c8",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                    textDecoration: "none",
+                                    maxWidth: "100%",
+                                  }}
+                                >
+                                  <ExternalLink size={10} style={{ flexShrink: 0 }} />
+                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {item.refUrl.replace(/^https?:\/\//, "").slice(0, 56)}
+                                    {item.refUrl.length > 56 ? "…" : ""}
+                                  </span>
+                                </a>
+                              )}
+                              {"domain" in item && item.domain && (
+                                <span style={{ fontSize: 10, color: "#6d8099" }}>{item.domain}</span>
+                              )}
+                            </div>
                           )}
                           {item.type === "ai" && item.importanceReason && (
                             <div style={{ fontSize: 11, color: "#7a8da3" }}>{item.importanceReason}</div>

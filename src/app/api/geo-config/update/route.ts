@@ -18,8 +18,15 @@ import {
   providerToSourceType,
   researchHasContent,
 } from '@/lib/geoCriteriaResearch';
+import { getGeminiPaidApiKey } from '@/lib/geminiEnv';
+import { waitForGeminiRateLimitSlot } from '@/lib/geminiGlobalRateLimiter';
+import {
+  CONFIG_VALIDITY_DAYS,
+  ageDaysFromCreatedAt,
+  isConfigExpired,
+} from '@/lib/geoCacheTtl';
 
-export const CONFIG_VALIDITY_DAYS = 30;
+export { CONFIG_VALIDITY_DAYS } from '@/lib/geoCacheTtl';
 
 /** GET metadata: active row missing | within TTL | past TTL (still active until POST refresh). */
 export type GeoConfigGetStatus = 'NO_ACTIVE_CONFIG' | 'CACHED' | 'STALE';
@@ -27,20 +34,12 @@ export type GeoConfigGetStatus = 'NO_ACTIVE_CONFIG' | 'CACHED' | 'STALE';
 /** POST outcome: served existing | new config persisted. */
 export type GeoConfigPostStatus = 'CACHED' | 'REBUILT';
 
-function ageDaysFromCreatedAt(createdAtIso: string | null | undefined): number | null {
-  if (!createdAtIso) return null;
-  const t = new Date(createdAtIso).getTime();
-  if (Number.isNaN(t)) return null;
-  return Math.floor((Date.now() - t) / (1000 * 60 * 60 * 24));
-}
-
 function configJsonOrDefault(row: { config_json?: unknown } | null): GeoScoringConfig {
   const j = row?.config_json;
   if (j && typeof j === 'object') return j as GeoScoringConfig;
   return DEFAULT_SCORING_CONFIG;
 }
 
-const GEMINI_API_KEY = process.env.GOOGLE_GENAI_API_KEY ?? '';
 
 /** When assembling research for Gemini, follow `docs/geo-project-state/09-geo-research-policy.md`: prioritize academic, then official docs, then authority industry; add Tavily trend only as optional supplement (see `fetchGeoCriteriaResearch`). */
 
@@ -514,7 +513,7 @@ export async function GET() {
 
     const createdAt = row.created_at ? new Date(row.created_at) : null;
     const ageDays = ageDaysFromCreatedAt(row.created_at);
-    const withinTtl = ageDays !== null && ageDays < CONFIG_VALIDITY_DAYS;
+    const withinTtl = ageDays !== null && !isConfigExpired(row.created_at);
     const getStatus: GeoConfigGetStatus =
       ageDays === null ? 'STALE' : withinTtl ? 'CACHED' : 'STALE';
 
@@ -600,7 +599,7 @@ export async function POST(req: Request) {
       rebuildReason = 'no_active_config';
     } else if (ageDays === null) {
       rebuildReason = 'missing_created_at';
-    } else if (ageDays < CONFIG_VALIDITY_DAYS) {
+    } else if (ageDays !== null && !isConfigExpired(row.created_at)) {
       const createdAt = new Date(row.created_at as string);
       const daysUntilNext = Math.max(0, CONFIG_VALIDITY_DAYS - ageDays);
       return NextResponse.json(
@@ -622,9 +621,13 @@ export async function POST(req: Request) {
       rebuildReason = 'expired';
     }
 
-    if (!GEMINI_API_KEY) {
+    const paidGeminiKey = getGeminiPaidApiKey();
+    if (!paidGeminiKey) {
       return NextResponse.json(
-        { error: 'GOOGLE_GENAI_API_KEY가 설정되지 않았습니다.' },
+        {
+          error:
+            '유료 Gemini API 키가 필요합니다. GEMINI_PAID_API_KEY, GEMINI_API_KEY, GOOGLE_GENAI_API_KEY 중 하나를 설정하세요.',
+        },
         { status: 500 }
       );
     }
@@ -645,7 +648,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    const genAI = new GoogleGenerativeAI(paidGeminiKey);
 
     // Choose model from env with sensible fallbacks; log chosen model for diagnostics
     const chosenModel =
@@ -680,8 +683,6 @@ export async function POST(req: Request) {
     }
 
     const prompt = buildGeminiPrompt(currentConfig, researchBuckets);
-    // Cool-down before calling Gemini to stay under free-tier RPM
-    await new Promise((res) => setTimeout(res, 5000));
 
     // Validate configured model if possible
     try {
@@ -702,6 +703,7 @@ export async function POST(req: Request) {
 
     let responseText: string;
     try {
+      await waitForGeminiRateLimitSlot('geoConfigUpdate');
       const geminiResult = await model.generateContent(prompt);
       responseText = geminiResult.response.text().trim();
     } catch (err: any) {

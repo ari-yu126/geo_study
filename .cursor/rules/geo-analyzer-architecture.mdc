@@ -31,6 +31,12 @@ Full reference: `docs/geo-project-state/11-system-philosophy-and-architecture-ru
 - Explain strengths, gaps, weak signals, and actionable opportunities—not only errors.
 - Prioritize answerability, extractability, trust, citation likelihood.
 
+## Recommendation panel (Content Improvement Guide)
+
+- **Not** a score explanation or diagnostics report for end users. It is **writing and structure guidance** (gaps → actions → suggested headings/blocks → examples).
+- Internal metrics (axes, scores, signals) drive the engine **offline**; user-facing recommendation copy stays plain and editor-like.
+- Full rules: `.cursor/rules/geo-recommendation-content-guide.mdc`.
+
 ## GEO Score meaning
 
 > Likelihood that an AI system will select, summarize, or cite this page as an answer source.

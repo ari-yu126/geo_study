@@ -27,6 +27,17 @@ function getInitialUrl(): string {
   return params.get("url") ?? "";
 }
 
+/** POST /api/analyze — forceRefresh defaults false (cache-friendly). */
+function postAnalyzeRequest(targetUrl: string, forceRefresh: boolean) {
+  const trimmed = targetUrl.trim();
+  console.log("[ANALYZE REQUEST]", { url: trimmed, forceRefresh });
+  return fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: trimmed, forceRefresh }),
+  });
+}
+
 export default function Home() {
   const [url, setUrl] = useState(getInitialUrl);
   const [status, setStatus] = useState<Status>("idle");
@@ -42,6 +53,10 @@ export default function Home() {
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   const [iframeScrollTop, setIframeScrollTop] = useState(0);
   const [reanalyzing, setReanalyzing] = useState(false);
+  const [analyzeMeta, setAnalyzeMeta] = useState<{
+    fromCache: boolean;
+    cacheLayer: string;
+  } | null>(null);
 
   const [iframeSrc, setIframeSrc] = useState<string>("");
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -98,8 +113,9 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [status]);
 
-  const runAnalyze = async (targetUrl: string) => {
+  const runAnalyze = async (targetUrl: string, options?: { forceRefresh?: boolean }) => {
     if (!targetUrl.trim()) return;
+    const forceRefresh = options?.forceRefresh === true;
 
     setStatus("loading");
     setError("");
@@ -108,6 +124,7 @@ export default function Home() {
     setIssues([]);
     setPassedChecks([]);
     setActiveIssueId(null);
+    setAnalyzeMeta(null);
 
     const stepInterval = setInterval(() => {
       setLoadingStep((prev) => {
@@ -118,14 +135,7 @@ export default function Home() {
     }, 800);
 
     try {
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: targetUrl.trim(),
-          forceRefresh: true, // 점수 로직 변경 시 캐시 무시
-        }),
-      });
+      const res = await postAnalyzeRequest(targetUrl, forceRefresh);
 
       clearInterval(stepInterval);
       setLoadingStep(LOADING_STEPS.length - 1);
@@ -139,6 +149,10 @@ export default function Home() {
       const data = await res.json();
       const resResult = data.result as import("@/lib/analysisTypes").AnalysisResult;
       setResult(resResult);
+      setAnalyzeMeta({
+        fromCache: Boolean(data.fromCache),
+        cacheLayer: typeof data.cacheLayer === "string" ? data.cacheLayer : "none",
+      });
       const topChunks = (resResult.chunkCitations ?? [])
         .slice()
         .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
@@ -177,20 +191,17 @@ export default function Home() {
     currentAnalyzedUrlRef.current = targetUrl;
 
     try {
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: targetUrl.trim(),
-          forceRefresh: false,
-        }),
-      });
+      const res = await postAnalyzeRequest(targetUrl, false);
 
       if (!res.ok) return;
 
       const data = await res.json();
       const resResult = data.result;
       setResult(resResult);
+      setAnalyzeMeta({
+        fromCache: Boolean(data.fromCache),
+        cacheLayer: typeof data.cacheLayer === "string" ? data.cacheLayer : "none",
+      });
       setUrl(targetUrl);
 
       const embed = toEmbedUrl(targetUrl.trim());
@@ -241,6 +252,7 @@ export default function Home() {
     setIframeScrollTop(0);
     setIframeSrc("");
     setPassedChecks([]);
+    setAnalyzeMeta(null);
 
     const newUrl = new URL(window.location.href);
     newUrl.searchParams.delete("url");
@@ -362,13 +374,14 @@ export default function Home() {
         {/* 좌측 패널 */}
         <AuditPanel
           result={result}
+          analyzeMeta={analyzeMeta}
           issues={issues}
           passedChecks={passedChecks}
           activeIssueId={activeIssueId}
           onIssueClick={handleIssueClick}
           onReset={handleReset}
           onExportPPT={handleExportPPT}
-          onNavigate={(newUrl) => runAnalyze(newUrl)}
+          onNavigate={(newUrl, opts) => runAnalyze(newUrl, opts)}
           onQuestionClick={handleQuestionClick}
           onPassedCheckClick={handlePassedCheckClick}
           exporting={exporting}

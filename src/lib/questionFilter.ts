@@ -1,4 +1,8 @@
-import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
+import {
+  analysisLlmGenerateText,
+  analysisLlmIsConfigured,
+  getAnalysisLlmPreCallDelayMs,
+} from './analysisLlm';
 import { isQuotaError, isLlmCooldown } from './llmError';
 import type { SearchQuestion } from './analysisTypes';
 
@@ -13,7 +17,7 @@ export type FilterQuestionsRunMeta = {
   status:
     | 'ok_llm'
     | 'bypass_empty_questions'
-    | 'bypass_no_gemini'
+    | 'bypass_no_llm'
     | 'bypass_cooldown'
     | 'bypass_quota'
     | 'bypass_error';
@@ -32,8 +36,8 @@ export async function filterQuestionsByPageRelevance(
   if (!questions.length) {
     return { questions, meta: { status: 'bypass_empty_questions' } };
   }
-  if (!geminiFlash) {
-    return { questions, meta: { status: 'bypass_no_gemini' } };
+  if (!analysisLlmIsConfigured()) {
+    return { questions, meta: { status: 'bypass_no_llm' } };
   }
   if (isLlmCooldown()) {
     return { questions, meta: { status: 'bypass_cooldown' } };
@@ -74,12 +78,11 @@ ${list}
 페이지 주제와 무관한 질문(다른 상품, 다른 도메인, 완전히 다른 주제)은 제외해줘.`;
 
   try {
-    // Mandatory cool-down before Gemini call (free-tier safety)
-    await new Promise((res) => setTimeout(res, 5000));
-    const result = await traceGeminiGenerateContent('questionFilter', () =>
-      geminiFlash.generateContent([{ text: prompt }])
-    );
-    const raw = result.response.text().trim();
+    const preDelay = getAnalysisLlmPreCallDelayMs();
+    if (preDelay > 0) {
+      await new Promise((res) => setTimeout(res, preDelay));
+    }
+    const raw = await analysisLlmGenerateText('questionFilter', prompt);
     const indices = raw
       .replace(/[^\d,]/g, '')
       .split(',')

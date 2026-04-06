@@ -9,6 +9,7 @@ export const GEMINI_BATCH_SIZE = 1;
 /** 배치/재시도 간 지연(ms) — Paid Tier 업그레이드 시 300~400으로 축소 */
 export const GEMINI_RETRY_DELAY = 5000;
 
+import { waitForGeminiRateLimitSlot } from './geminiGlobalRateLimiter';
 import { isQuotaError, extractRetryAfterSeconds, setLlmCooldown } from './llmError';
 import type { LlmFeature } from './analysisTypes';
 
@@ -38,6 +39,8 @@ function isRateLimit429(err: unknown): boolean {
 export interface WithGeminiRetryOptions {
   feature: LlmFeature;
   maxRetries?: number;
+  /** ms to wait before each attempt (Gemini free-tier RPM). Use 0 for Groq. Default 5000. */
+  preCallDelayMs?: number;
 }
 
 export type GeminiRetryResult<T> =
@@ -61,13 +64,15 @@ export async function withGeminiRetry<T>(
   fn: () => Promise<T>,
   options: WithGeminiRetryOptions
 ): Promise<GeminiRetryResult<T>> {
-  const { feature, maxRetries = 3 } = options;
+  const { feature, maxRetries = 3, preCallDelayMs = 0 } = options;
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      // Mandatory cool-down before each Gemini call to respect free-tier RPM limits.
-      await new Promise((res) => setTimeout(res, 5000));
+      await waitForGeminiRateLimitSlot(`retry:${feature}`);
+      if (preCallDelayMs > 0) {
+        await new Promise((res) => setTimeout(res, preCallDelayMs));
+      }
       const data = await fn();
       return { ok: true, data };
     } catch (err) {

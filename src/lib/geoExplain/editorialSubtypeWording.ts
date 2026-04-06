@@ -11,65 +11,76 @@ import type {
   GeoOpportunity,
   GeoPassedItem,
 } from '../analysisTypes';
+import { CONTENT_FOCUS_LABEL } from '../recommendations/recommendationUiLabels';
 
 export function getEditorialSubtypeTone(result: AnalysisResult): EditorialSubtype | null {
   if (result.pageType !== 'editorial' || !result.editorialSubtype) return null;
   return result.editorialSubtype;
 }
 
-const AXIS_KO: Partial<Record<GeoAxis, string>> = {
-  citation: 'AI 인용',
-  paragraph: '문단',
-  answerability: '답변 적합성',
-  structure: '구조·메타',
-  trust: '신뢰',
-  questionMatch: '질문 매칭',
-  questionCoverage: '질문 커버리지',
-};
-
 export function parseAxisWeakScoreFromDescription(description: string): number {
   const m = description.match(/점수가\s*(\d+)/);
   return m ? parseInt(m[1]!, 10) : 0;
 }
 
-function axisWeakCopy(axis: GeoAxis, v: number, tone: EditorialSubtype): { description: string; fix: string } {
-  const ak = AXIS_KO[axis] ?? axis;
-  const base = `${ak} 축 점수가 ${v}로 낮아 AI 인용·요약에 불리할 수 있습니다.`;
-  const baseFix = `${ak} 축과 맞는 콘텐츠·구조·신호를 보강하세요.`;
-  if (tone === 'blog') {
-    return {
-      description: `${base} 독자·기사형 글이라면 도입 요약·인용 가능한 문장·출처를 함께 다듬는 것이 좋습니다.`,
-      fix: `${baseFix} (글형: 한눈 요약·근거 문장·날짜·출처)`,
-    };
-  }
-  if (tone === 'site_info') {
-    return {
-      description: `${base} 공식 안내·정책·서비스 설명 페이지라면 상단 요약·목차·일관된 톤을 맞추면 AI가 인용하기 쉽습니다.`,
-      fix: `${baseFix} (안내형: 요약 블록·스캔 가능한 목차·갱신 정보)`,
-    };
-  }
+/** Problem + fix copy without scores, axes, or internal subtype labels. */
+const WEAK_PROBLEM_KO: Partial<Record<GeoAxis, string>> = {
+  citation: '숫자·출처·근거가 드러나는 문장이 부족해 보입니다.',
+  paragraph: '앞부분 요약 없이 글이 길게 이어져 스캔하기 어렵습니다.',
+  answerability: '질문에 바로 답하는 문장이 도입부에 약합니다.',
+  structure: '소제목·목차 신호가 약해 한눈에 구조가 들어오지 않습니다.',
+  trust: '작성자·갱신·출처 정보가 부족해 보입니다.',
+  questionMatch: '검색 질문 표현이 제목·본문에 잘 드러나지 않습니다.',
+  questionCoverage: '자주 묻는 질문에 직접 답하는 부분이 부족합니다.',
+  density: '핵심 정보 밀도가 낮아 보입니다.',
+  videoMetadata: '설명란 신호가 약합니다.',
+};
+
+const WEAK_FIX_KO: Partial<Record<GeoAxis, string>> = {
+  citation: '짧은 근거 문단과 출처를 추가해 보세요.',
+  paragraph: '맨 위에 3~4줄 요약과 불릿으로 핵심을 먼저 제시해 보세요.',
+  answerability: '첫 문단에 결론과 범위를 넣어 질문에 바로 답하도록 다듬어 보세요.',
+  structure: 'H2/H3와 한 줄 개요로 글의 뼈대를 드러내 보세요.',
+  trust: '작성자·갱신일·출처·문의처를 한 블록에 정리해 보세요.',
+  questionMatch: '검색 질문 문장을 소제목에 그대로 써 보세요.',
+  questionCoverage: 'FAQ나 Q/A 블록으로 자주 묻는 질문에 답해 보세요.',
+  density: '핵심 문장과 근거를 압축해 넣어 보세요.',
+  videoMetadata: '설명란에 챕터·요약·FAQ를 채워 보세요.',
+};
+
+function toneWeakTail(tone: EditorialSubtype): string {
+  if (tone === 'blog')
+    return ' 도입 요약과 인용하기 좋은 문장·출처를 함께 다듬으면 읽기와 인용에 유리합니다.';
+  if (tone === 'site_info')
+    return ' 상단 요약과 스캔 가능한 목차를 갖추면 정보를 빠르게 찾을 수 있습니다.';
+  return ' 섹션마다 역할을 나누어 정리하면 읽기와 인용에 도움이 됩니다.';
+}
+
+function axisWeakCopy(axis: GeoAxis, _v: number, tone: EditorialSubtype): { description: string; fix: string } {
+  const problem = WEAK_PROBLEM_KO[axis] ?? '이 부분에서 보완 여지가 있습니다.';
+  const fix = WEAK_FIX_KO[axis] ?? '문장과 구조를 위 가이드에 맞춰 다듬어 보세요.';
   return {
-    description: `${base} 글형과 안내형 요소가 함께 있다면 섹션별 역할을 나누어 정리하면 인용에 유리합니다.`,
-    fix: `${baseFix} (일반정보형 맥락: 역할별 구역·요약)`,
+    description: problem + toneWeakTail(tone),
+    fix,
   };
 }
 
 function issueSuffixes(tone: EditorialSubtype): { desc: string; fix: string } {
   if (tone === 'blog') {
     return {
-      desc: ' 글·독자 중심 페이지라면 핵심 요약과 출처를 분명히 하면 인용에 유리합니다.',
-      fix: ' (글형 맥락: 요약·출처 보강)',
+      desc: ' 핵심 요약과 출처를 함께 제시하면 신뢰와 인용에 도움이 됩니다.',
+      fix: ' 요약 문단과 근거·링크를 한데 묶어 보완해 보세요.',
     };
   }
   if (tone === 'site_info') {
     return {
-      desc: ' 공식 안내·도움말·정책 문서라면 요약·목차·일관된 톤을 유지하는 것이 좋습니다.',
-      fix: ' (안내형 맥락: 구조·공식 톤)',
+      desc: ' 상단 요약과 일관된 목차가 있으면 정보를 찾기 쉬워집니다.',
+      fix: ' 요약 블록과 목차를 점검하고 갱신 정보를 명시해 보세요.',
     };
   }
   return {
-    desc: ' 맥락이 혼합된 페이지는 섹션 역할을 나누면 AI가 인용하기 쉽습니다.',
-    fix: ' (일반정보형 맥락: 역할별 정리)',
+    desc: ' 섹션 역할이 분명하면 독자가 글을 따라가기 쉽습니다.',
+    fix: ' 역할별로 요약과 근거를 나누어 정리해 보세요.',
   };
 }
 
@@ -82,9 +93,9 @@ const GEO_PASSED_IDS = new Set([
 ]);
 
 function passedRuleReasonTail(tone: EditorialSubtype): string {
-  if (tone === 'blog') return ' — 독자·글형 맥락에서 이 신호를 살리면 좋습니다.';
-  if (tone === 'site_info') return ' — 공식 안내 맥락에서 이 신호를 살리면 좋습니다.';
-  return ' — 일반정보형 맥락에서는 섹션 역할을 나누면 좋습니다.';
+  if (tone === 'blog') return ' 이 신호를 유지하면서 도입 요약과 근거를 함께 키우면 좋습니다.';
+  if (tone === 'site_info') return ' 이 신호를 유지하면서 요약과 목차를 주기적으로 맞추면 좋습니다.';
+  return ' 섹션별로 요약과 근거를 정리하면 인용에 유리합니다.';
 }
 
 /** Built-in strengths we fully rephrase for editorial tone (ids stable). */
@@ -175,20 +186,20 @@ function passedGeoCopy(id: string, tone: EditorialSubtype): { description: strin
 }
 
 function passedAxisStrongReason(axis: GeoAxis, _v: number, tone: EditorialSubtype): string {
-  const ak = AXIS_KO[axis] ?? axis;
+  const label = CONTENT_FOCUS_LABEL.ko[axis] ?? axis;
   if (tone === 'blog') {
-    return `${ak} 축이 높습니다. 독자용 글에서 이 강점을 유지·강화하면 인용 후보가 됩니다.`;
+    return `${label}에서 좋은 신호가 있습니다. 앞부분 요약과 함께 이 강점을 유지해 보세요.`;
   }
   if (tone === 'site_info') {
-    return `${ak} 축이 높습니다. 공식 안내·서비스 설명으로서 신뢰 신호를 유지하면 좋습니다.`;
+    return `${label}에서 좋은 신호가 있습니다. 요약과 목차와 함께 유지하면 방문자에게 신뢰를 줍니다.`;
   }
-  return `${ak} 축이 높습니다. 글형·안내형이 섞인 페이지에서는 역할별로 이 신호를 살리면 인용에 유리합니다.`;
+  return `${label}에서 좋은 신호가 있습니다. 섹션별로 이 흐름을 살려 보세요.`;
 }
 
 function opportunityRationaleSuffix(tone: EditorialSubtype): string {
-  if (tone === 'blog') return ' 블로그·기사형이라면 도입 요약·출처와 함께 다듬으면 효과가 큽니다.';
-  if (tone === 'site_info') return ' 공식 안내·정책 페이지라면 요약 블록·목차·일관 톤을 맞추면 좋습니다.';
-  return ' 맥락이 혼합된 페이지는 섹션별 역할을 나누면 인용이 쉬워집니다.';
+  if (tone === 'blog') return ' 도입부 요약과 출처·근거를 함께 다듬으면 효과가 큽니다.';
+  if (tone === 'site_info') return ' 요약 블록과 목차·일관된 설명 톤을 맞추면 좋습니다.';
+  return ' 섹션별 역할을 나누면 읽기와 인용이 쉬워집니다.';
 }
 
 export function refineGeoIssueForEditorialSubtype(issue: GeoIssue, tone: EditorialSubtype): GeoIssue {
@@ -238,11 +249,8 @@ export function refineOpportunityForEditorialSubtype(opp: GeoOpportunity, tone: 
   const extra = opportunityRationaleSuffix(tone);
   if (opp.id.startsWith('opp_boost_')) {
     const axis = opp.improvesAxis;
-    const ak = AXIS_KO[axis] ?? axis;
-    let title = opp.title;
-    if (tone === 'blog') title = `${ak} 축 강화 (독자·글형)`;
-    else if (tone === 'site_info') title = `${ak} 축 강화 (공식 안내)`;
-    else title = `${ak} 축 강화 (일반정보형 맥락)`;
+    const label = CONTENT_FOCUS_LABEL.ko[axis] ?? axis;
+    const title = `${label} 보강하기`;
     return {
       ...opp,
       title,
@@ -252,25 +260,47 @@ export function refineOpportunityForEditorialSubtype(opp: GeoOpportunity, tone: 
   return { ...opp, rationale: opp.rationale + extra };
 }
 
+function joinSummarySentence(base: string, addition: string): string {
+  const t = base.trimEnd();
+  if (!addition.startsWith(' ')) addition = ` ${addition}`;
+  if (/[.!?…]$/.test(t)) return `${t}${addition}`;
+  return `${t}.${addition}`;
+}
+
 export function refineEditorialTrendSummaryForSubtype(trendSummary: string, tone: EditorialSubtype | null): string {
   if (!tone) return trendSummary;
   if (tone === 'blog') {
-    return `${trendSummary} (글형: 독자 관점 요약·근거를 함께 보강하면 좋습니다.)`;
+    return joinSummarySentence(
+      trendSummary,
+      '핵심 요약과 근거를 분명히 하면 독자가 빠르게 이해하고 인용하기 좋습니다.'
+    );
   }
   if (tone === 'site_info') {
-    return `${trendSummary} (안내형: 공식 톤·목차·요약 블록을 점검하세요.)`;
+    return joinSummarySentence(
+      trendSummary,
+      '구조를 정리하면 핵심 정보를 빠르게 찾고 이해하기 쉬워집니다.'
+    );
   }
-  return `${trendSummary} (일반정보형 맥락: 글형·안내형 섹션을 구분해 정리하면 좋습니다.)`;
+  return joinSummarySentence(trendSummary, '서로 다른 성격의 내용은 섹션을 나누어 정리하면 읽기와 인용에 유리합니다.');
 }
 
-/** English Gemini strategy line — short subtype context (editorial pages only). */
+/** English — natural closing sentence (no subtype labels). */
 export function refineGeminiEditorialTrendSummary(trendSummary: string, tone: EditorialSubtype | null): string {
   if (!tone) return trendSummary;
-  const tail =
-    tone === 'blog'
-      ? ' [Editorial subtype: article/reader context—favor takeaway, sourcing, quotable lines.]'
-      : tone === 'site_info'
-      ? ' [Editorial subtype: official/help context—favor scannable structure, policy clarity, summaries.]'
-      : ' [Editorial subtype: mixed context—separate article-style vs documentation-style sections.]';
-  return trendSummary + tail;
+  if (tone === 'blog') {
+    return joinSummarySentence(
+      trendSummary,
+      'Focus on adding clear summaries and supporting evidence so readers can quickly understand the key points.'
+    );
+  }
+  if (tone === 'site_info') {
+    return joinSummarySentence(
+      trendSummary,
+      'Make the structure clearer so key information can be scanned and understood quickly.'
+    );
+  }
+  return joinSummarySentence(
+    trendSummary,
+    'Clarify each section’s role so narrative and reference-style content stay easy to follow and cite.'
+  );
 }

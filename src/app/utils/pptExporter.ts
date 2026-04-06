@@ -273,8 +273,8 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
     const ap = result.recommendations.actionPlan;
     const s = pptx.addSlide();
     s.background = { color: BG };
-    s.addText("액션 플랜 (AI 추천)", { x: 0.5, y: 0.3, w: 12, h: 0.55, fontSize: 22, bold: true, color: TEXT, fontFace: "Arial" });
-    s.addText("추가할 H2/H3 제목 및 블록(테이블, 리스트, FAQ) — GEO 점수 향상을 위한 맞춤 제안", { x: 0.5, y: 0.82, w: 12, h: 0.3, fontSize: 10, color: MUTED, fontFace: "Arial" });
+    s.addText("액션 플랜 (콘텐츠 개선 가이드)", { x: 0.5, y: 0.3, w: 12, h: 0.55, fontSize: 22, bold: true, color: TEXT, fontFace: "Arial" });
+    s.addText("분석 신호에 따른 소제목·블록 제안 — 읽기·검색·인용에 유리한 구조로 다듬을 수 있습니다.", { x: 0.5, y: 0.82, w: 12, h: 0.3, fontSize: 10, color: MUTED, fontFace: "Arial" });
     s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 1.12, w: 12, h: 0.03, fill: { color: BORDER }, line: { type: "none" } });
 
     let iy = 1.35;
@@ -314,7 +314,7 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
     tips.push({ title: "Schema 마크업 추가", tip: "FAQPage, Article 스키마를 JSON-LD 형식으로 추가하면 AI 인식률이 높아집니다.", priority: "low" });
     if (result.recommendations?.actionPlan?.priorityNotes) {
       result.recommendations.actionPlan.priorityNotes.forEach((note) =>
-        tips.push({ title: "AI 추천", tip: note, priority: "medium" as const })
+        tips.push({ title: "가이드", tip: note, priority: "medium" as const })
       );
     }
 

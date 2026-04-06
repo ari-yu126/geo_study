@@ -1,4 +1,8 @@
-import { geminiFlash, traceGeminiGenerateContent } from './geminiClient';
+import {
+  analysisLlmGenerateText,
+  analysisLlmIsConfigured,
+  getAnalysisLlmPreCallDelayMs,
+} from './analysisLlm';
 import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
 import { withGeminiRetry } from './geminiRetry';
 import type { AnalysisMeta, AnalysisResult, AuditIssue, GeoScores, SeedKeyword, TrustSignals, SearchQuestion } from './analysisTypes';
@@ -12,9 +16,11 @@ export class VideoAnalysisQuotaSkipError extends Error {
     this.retryAfterSec = retryAfterSec;
   }
 }
-import { normalizeUrl } from './htmlAnalyzer';
+import { normalizeUrl } from './normalizeUrl';
 import { computeChunkInfoDensity } from './paragraphAnalyzer';
 import { computeQuestionMatchScore, computeSearchQuestionCoverage } from './questionCoverage';
+import { buildCoverageMatchInputPlain } from './coverageSurfaces';
+import type { CoverageMatchInput } from './coverageSurfaces';
 import { loadActiveScoringConfig, getProfileForPageType } from './scoringConfigLoader';
 
 /** URL t= 값을 초 단위로 파싱. 120, 1m30s, 1h2m30s 등 */
@@ -107,17 +113,10 @@ export async function runGeminiVideoAnalysis(
   url: string,
   meta: AnalysisMeta
 ): Promise<GeminiVideoAnalysisResult | null> {
-  console.log('[GEMINI KEY]', {
-    GOOGLE_GENAI_API_KEY: !!process.env.GOOGLE_GENAI_API_KEY,
-    GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
-    NODE_ENV: process.env.NODE_ENV,
-  });
-
-  if (!process.env.GOOGLE_GENAI_API_KEY && !process.env.GEMINI_API_KEY) {
-    console.warn('[GEMINI VIDEO] skipped: missing API key');
+  if (!analysisLlmIsConfigured()) {
+    console.warn('[VIDEO LLM] skipped: no API key for GEO_ANALYSIS_LLM provider');
     return null;
   }
-  if (!geminiFlash) return null;
   if (isLlmCooldown()) {
     const sec = getCooldownRemainingSec();
     console.warn('[GEMINI] cooldown active - skip video analysis', { retryAfterSec: sec });
@@ -171,11 +170,12 @@ export async function runGeminiVideoAnalysis(
 JSON:`;
 
   const wrap = await withGeminiRetry(
-    () =>
-      traceGeminiGenerateContent('geminiVideoAnalysis', () =>
-        geminiFlash.generateContent([{ text: prompt }])
-      ),
-    { feature: 'videoAnalysis', maxRetries: 3 }
+    () => analysisLlmGenerateText('geminiVideoAnalysis', prompt),
+    {
+      feature: 'videoAnalysis',
+      maxRetries: 3,
+      preCallDelayMs: getAnalysisLlmPreCallDelayMs(),
+    }
   );
 
   if (!wrap.ok) {
@@ -189,8 +189,10 @@ JSON:`;
   }
 
   try {
-    const result = wrap.data;
-    const raw = result.response.text().trim();
+    const raw =
+      typeof wrap.data === 'string'
+        ? wrap.data.trim()
+        : String(wrap.data ?? '').trim();
     const jsonStr = raw.replace(/^```json?\s*/i, '').replace(/\s*```\s*$/, '').trim();
     const parsed = JSON.parse(jsonStr) as {
       coreTopic?: string;
@@ -231,8 +233,10 @@ export interface BuildYouTubeOptions {
   /** video 전용: questionCoverage/answerability 0 방지용 텍스트 (description + title + channel) */
   effectiveContentText?: string;
   usedOEmbed?: boolean;
-  /** Tavily 수집 질문 — video에서도 질문/답변 축 계산용 */
+  /** Canonical question intents for coverage/match (derived from search evidence + topic) */
   searchQuestions?: SearchQuestion[];
+  /** Optional: when omitted, built from meta + effectiveContentText */
+  coverageMatchInput?: CoverageMatchInput;
   /** Gemini 실패 시 규칙 기반 citationScore 오버라이드 */
   fallbackCitationScore?: number;
 }
@@ -264,7 +268,13 @@ export async function buildYouTubeAnalysisResult(
     score: 1 - i * 0.1,
   }));
 
-  const { hasActualAiCitation, effectiveContentText, searchQuestions: passedSearchQuestions, fallbackCitationScore } = options;
+  const {
+    hasActualAiCitation,
+    effectiveContentText,
+    searchQuestions: passedSearchQuestions,
+    fallbackCitationScore,
+    coverageMatchInput: passedCoverageInput,
+  } = options;
   const trustSignals: TrustSignals = {
     hasAuthor: false,
     hasPublishDate: false,
@@ -303,12 +313,21 @@ export async function buildYouTubeAnalysisResult(
   const searchQuestions = passedSearchQuestions ?? [];
   const contentForCoverage = effectiveContentText ?? descText;
 
+  const coverageInput =
+    passedCoverageInput ??
+    buildCoverageMatchInputPlain({
+      meta,
+      contentText: contentForCoverage,
+      pageQuestions,
+      topicTokens: seedKeywords.map((k) => k.value).filter(Boolean),
+    });
+
   let questionCoverageScore = 0;
   let questionMatchScore = 0;
   let searchQuestionCovered: boolean[] = [];
 
   if (searchQuestions.length > 0 && contentForCoverage.length > 0) {
-    searchQuestionCovered = computeSearchQuestionCoverage(pageQuestions, searchQuestions, contentForCoverage);
+    searchQuestionCovered = computeSearchQuestionCoverage(searchQuestions, coverageInput);
     questionCoverageScore = Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100);
     questionMatchScore = computeQuestionMatchScore(searchQuestions, contentForCoverage);
   }

@@ -1,4 +1,5 @@
-import { fetchHtml, extractMetaAndContent, normalizeUrl } from './htmlAnalyzer';
+import { fetchHtml, extractMetaAndContent } from './htmlAnalyzer';
+import { normalizeUrl } from './normalizeUrl';
 import { runGeminiVideoAnalysis, buildYouTubeAnalysisResult, VideoAnalysisQuotaSkipError, type GeminiVideoAnalysisResult } from './geminiVideoAnalysis';
 import {
   estimateVideoCitationScore,
@@ -7,6 +8,9 @@ import {
 } from './videoScoreFallback';
 import { extractSeedKeywords } from './keywordExtractor';
 import { fetchSearchQuestions, derivePrimaryTopic } from './searchQuestions';
+import { buildCanonicalSearchQuestions } from './canonicalSearchQuestions';
+import { buildCoverageMatchInput, buildCoverageMatchInputPlain } from './coverageSurfaces';
+import type { CoverageMatchInput } from './coverageSurfaces';
 import { filterQuestionsByPageRelevance, type FilterQuestionsRunMeta } from './questionFilter';
 import { getProfileForPageType, loadActiveScoringConfig } from './scoringConfigLoader';
 import { evaluateCheck } from './checkEvaluator';
@@ -15,7 +19,6 @@ import { extractChunks, evaluateCitations, citationsToScore } from './citationEv
 import { deriveAuditIssues } from './issueDetector';
 import { buildAxisScores, logGeoExplainDebug } from './geoExplain';
 import { generateGeoRecommendations } from './recommendationEngine';
-import { generateTemplateRecommendations } from './recommendationFallback';
 import { detectEditorialSubtype } from './editorialSubtype';
 import { hasDomainAuthority } from './domainAuthority';
 import { checkActualAiCitation, hasActualAiCitationDomain, type CheckActualAiCitationMeta } from './actualAiCitation';
@@ -75,12 +78,11 @@ function detectFaqLikePage(params: {
 }
 
 function findUncoveredQuestions(
-  pageQuestions: string[],
-  searchQuestions: SearchQuestion[],
-  contentText: string
+  canonicalSearchQuestions: SearchQuestion[],
+  coverageInput: CoverageMatchInput
 ): SearchQuestion[] {
-  const covered = computeSearchQuestionCoverage(pageQuestions, searchQuestions, contentText);
-  return searchQuestions.filter((_, i) => !covered[i]);
+  const covered = computeSearchQuestionCoverage(canonicalSearchQuestions, coverageInput);
+  return canonicalSearchQuestions.filter((_, i) => !covered[i]);
 }
 
 /** Set GEO_SCORE_AXIS_DEBUG=1; optional GEO_SCORE_AXIS_URL=rtings.com to filter by URL substring */
@@ -108,6 +110,8 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
   try {
     const appOrigin = options?.appOrigin ?? process.env.GEO_ANALYZER_BASE_URL;
     const llmStatuses: LlmCallStatus[] = [];
+    const activeScoringConfig = await loadActiveScoringConfig();
+    const geoConfigVersion = activeScoringConfig.version ?? null;
 
     // 유튜브 전용: ytInitialData/og → 필요 시 oEmbed fallback → effectiveContentText로 questionCoverage/answerability 0 방지
     if (isYouTubeUrl(url)) {
@@ -188,23 +192,38 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
           meta: { title: meta.title, ogTitle: meta.ogTitle },
           url,
         });
-        const topic = derivePrimaryTopic({ title: meta.title, ogTitle: meta.ogTitle }, url, seedKeywords);
+        const topic = derivePrimaryTopic({ title: meta.title, ogTitle: meta.ogTitle }, url, seedKeywords, 'video');
         const fqVideo = await filterQuestionsByPageRelevance(
           rawSearchQuestions,
           meta.title ?? null,
           enhancedContentText.slice(0, 2000),
           { pageType: 'video', primaryPhrase: topic.primaryPhrase }
         );
-        let searchQuestions = fqVideo.questions;
-        if (!searchQuestions.length) searchQuestions = rawSearchQuestions.slice(0, 10);
+        let searchEvidence = fqVideo.questions;
+        if (!searchEvidence.length) searchEvidence = rawSearchQuestions.slice(0, 10);
+
+        const searchQuestions = buildCanonicalSearchQuestions({
+          evidence: searchEvidence,
+          seedKeywords,
+          meta: { title: meta.title, ogTitle: meta.ogTitle },
+          topic,
+          pageType: 'video',
+        });
 
         const pageQuestions = meta.title ? [meta.title] : [];
+        const videoCoverageInput = buildCoverageMatchInputPlain({
+          meta,
+          contentText: enhancedContentText,
+          pageQuestions,
+          topicTokens: topic.essentialTokens,
+        });
         const top10 = searchQuestions.slice(0, 10);
-        const uncoveredQuestions = findUncoveredQuestions(pageQuestions, top10, enhancedContentText);
+        const uncoveredQuestions = findUncoveredQuestions(top10, videoCoverageInput);
 
         console.log('[VIDEO Q]', {
           raw: rawSearchQuestions.length,
-          filtered: searchQuestions.length,
+          filtered: searchEvidence.length,
+          canonical: searchQuestions.length,
           sample: searchQuestions.slice(0, 3).map((q) => q.text.slice(0, 60)),
         });
     
@@ -226,6 +245,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
           usedOEmbed,
           effectiveContentText: enhancedContentText,
           searchQuestions,
+          coverageMatchInput: videoCoverageInput,
         });
     
         console.log('[VIDEO CHECK]', {
@@ -249,48 +269,30 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         };
         logGeoExplainDebug(url, coreResult.pageType, geoExplainVideo);
 
-        const recResult = await generateGeoRecommendations(
-          uncoveredQuestions,
-          issues,
-          {
-            searchQuestions: coreResult.searchQuestions,
-            pageQuestions: coreResult.pageQuestions,
-            pageType: 'video',
-            geoOpportunities: opportunities,
-            geoIssues,
-            axisScores: coreResult.axisScores,
-          }
-        );
-        let recommendations: AnalysisResult['recommendations'];
-        if (recResult && typeof recResult === 'object' && 'error' in recResult && recResult.error === 'quota_exceeded') {
-          llmStatuses.push({
-            feature: 'recommendations',
-            status: 'skipped_quota',
-            retryAfterSec: recResult.retryAfterSec,
-            message: recResult.message ?? '요청이 많아 잠시 후 다시 시도해주세요.',
-          });
-          recommendations = generateTemplateRecommendations({
-            pageType: 'video',
-            uncoveredQuestions,
-            issues,
-            seedKeywords: coreResult.seedKeywords,
-            metaTitle: meta.title ?? null,
-          });
-        } else if (recResult && !('error' in recResult)) {
-          llmStatuses.push({ feature: 'recommendations', status: 'ok' });
-          recommendations = recResult;
-        } else {
-          recommendations = generateTemplateRecommendations({
-            pageType: 'video',
-            uncoveredQuestions,
-            issues,
-            seedKeywords: coreResult.seedKeywords,
-            metaTitle: meta.title ?? null,
-          });
-        }
+        const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
+          searchQuestions: coreResult.searchQuestions,
+          pageQuestions: coreResult.pageQuestions,
+          pageType: 'video',
+          geoOpportunities: opportunities,
+          geoIssues,
+          axisScores: coreResult.axisScores,
+          meta: {
+            title: meta.title,
+            description: meta.description,
+            ogTitle: meta.ogTitle,
+            ogDescription: meta.ogDescription,
+          },
+          textSample: enhancedContentText.slice(0, 4000),
+          contentQuality: coreResult.contentQuality,
+          limitedAnalysis: coreResult.limitedAnalysis,
+          seedKeywords: coreResult.seedKeywords,
+        });
     
         return {
           ...coreResult,
+          geoConfigVersion,
+          searchEvidence,
+          canonicalSearchQuestions: searchQuestions,
           recommendations,
           passedChecks,
           geoExplain: geoExplainVideo,
@@ -305,16 +307,30 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         meta: { title: meta.title, ogTitle: meta.ogTitle },
         url,
       });
+      const topicFb = derivePrimaryTopic({ title: meta.title, ogTitle: meta.ogTitle }, url, seedKeywords, 'video');
       const fqVideoFb = await filterQuestionsByPageRelevance(
         rawSearchQuestions,
         meta.title ?? null,
         effectiveContent.slice(0, 2000),
-        { pageType: 'video' }
+        { pageType: 'video', primaryPhrase: topicFb.primaryPhrase }
       );
-      let searchQuestions = fqVideoFb.questions;
-      if (!searchQuestions.length) searchQuestions = rawSearchQuestions.slice(0, 10);
+      let searchEvidence = fqVideoFb.questions;
+      if (!searchEvidence.length) searchEvidence = rawSearchQuestions.slice(0, 10);
+      const searchQuestions = buildCanonicalSearchQuestions({
+        evidence: searchEvidence,
+        seedKeywords,
+        meta: { title: meta.title, ogTitle: meta.ogTitle },
+        topic: topicFb,
+        pageType: 'video',
+      });
       const pageQuestions = meta.title ? [meta.title] : [];
-      const searchQuestionCovered = computeSearchQuestionCoverage(pageQuestions, searchQuestions, effectiveContent);
+      const videoCoverageInputFb = buildCoverageMatchInputPlain({
+        meta,
+        contentText: effectiveContent,
+        pageQuestions,
+        topicTokens: topicFb.essentialTokens,
+      });
+      const searchQuestionCovered = computeSearchQuestionCoverage(searchQuestions, videoCoverageInputFb);
       const questionCoverageScore = searchQuestions.length > 0
         ? Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100)
         : 0;
@@ -349,6 +365,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         usedOEmbed,
         effectiveContentText: effectiveContent,
         searchQuestions,
+        coverageMatchInput: videoCoverageInputFb,
         fallbackCitationScore,
       });
       coreResult.axisScores = buildAxisScores(coreResult);
@@ -368,48 +385,30 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       };
       logGeoExplainDebug(url, coreResult.pageType, geoExplainVideoFb);
       const top10 = searchQuestions.slice(0, 10);
-      const uncoveredQuestions = findUncoveredQuestions(pageQuestions, top10, effectiveContent);
-      const recResult = await generateGeoRecommendations(
-        uncoveredQuestions,
-        issues,
-        {
-          searchQuestions: coreResult.searchQuestions,
-          pageQuestions: coreResult.pageQuestions,
-          pageType: 'video',
-          geoOpportunities: oppsFb,
-          geoIssues: geoIssuesFb,
-          axisScores: coreResult.axisScores,
-        }
-      );
-      let recommendations: AnalysisResult['recommendations'];
-      if (recResult && typeof recResult === 'object' && 'error' in recResult && recResult.error === 'quota_exceeded') {
-        llmStatuses.push({
-          feature: 'recommendations',
-          status: 'skipped_quota',
-          retryAfterSec: recResult.retryAfterSec,
-          message: recResult.message ?? '요청이 많아 잠시 후 다시 시도해주세요.',
-        });
-        recommendations = generateTemplateRecommendations({
-          pageType: 'video',
-          uncoveredQuestions,
-          issues,
-          seedKeywords: coreResult.seedKeywords,
-          metaTitle: meta.title ?? null,
-        });
-      } else if (recResult && !('error' in recResult)) {
-        llmStatuses.push({ feature: 'recommendations', status: 'ok' });
-        recommendations = recResult;
-      } else {
-        recommendations = generateTemplateRecommendations({
-          pageType: 'video',
-          uncoveredQuestions,
-          issues,
-          seedKeywords: coreResult.seedKeywords,
-          metaTitle: meta.title ?? null,
-        });
-      }
+      const uncoveredQuestions = findUncoveredQuestions(top10, videoCoverageInputFb);
+      const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
+        searchQuestions: coreResult.searchQuestions,
+        pageQuestions: coreResult.pageQuestions,
+        pageType: 'video',
+        geoOpportunities: oppsFb,
+        geoIssues: geoIssuesFb,
+        axisScores: coreResult.axisScores,
+        meta: {
+          title: meta.title,
+          description: meta.description,
+          ogTitle: meta.ogTitle,
+          ogDescription: meta.ogDescription,
+        },
+        textSample: effectiveContent.slice(0, 4000),
+        contentQuality: coreResult.contentQuality,
+        limitedAnalysis: coreResult.limitedAnalysis,
+        seedKeywords: coreResult.seedKeywords,
+      });
       return {
         ...coreResult,
+        geoConfigVersion,
+        searchEvidence,
+        canonicalSearchQuestions: searchQuestions,
         recommendations,
         passedChecks,
         geoExplain: geoExplainVideoFb,
@@ -451,7 +450,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
     }
 
     const extracted = extractMetaAndContent(html);
-    const config = await loadActiveScoringConfig();
+    const config = activeScoringConfig;
     const {
       meta, headings, h1Count, contentText, pageQuestions,
       hasFaqSchema, hasStructuredData, hasProductSchema, hasReviewSchema, contentQuality, trustSignals: rawTrustSignals,
@@ -482,17 +481,40 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       contentForAnalysis
     );
 
-    let searchQuestions = await fetchSearchQuestions(seedKeywords, {
+    let searchEvidence = await fetchSearchQuestions(seedKeywords, {
       meta: { title: meta.title, ogTitle: meta.ogTitle },
       url,
     });
     const fqEditorial = await filterQuestionsByPageRelevance(
-      searchQuestions,
+      searchEvidence,
       meta.title,
       contentForAnalysis.slice(0, 1500)
     );
-    searchQuestions = fqEditorial.questions;
+    searchEvidence = fqEditorial.questions;
+    const primaryTopicForCanonical = derivePrimaryTopic(
+      { title: meta.title, ogTitle: meta.ogTitle },
+      url,
+      seedKeywords,
+      pageType
+    );
+    const searchQuestions = buildCanonicalSearchQuestions({
+      evidence: searchEvidence,
+      seedKeywords,
+      meta: { title: meta.title, ogTitle: meta.ogTitle },
+      topic: primaryTopicForCanonical,
+      pageType,
+    });
     const filterQuestionsMeta: FilterQuestionsRunMeta = fqEditorial.meta;
+
+    const coverageMatchInput = buildCoverageMatchInput({
+      meta,
+      headings,
+      html,
+      contentText: contentForAnalysis,
+      pageQuestions,
+      hasFaqSchema,
+      topicTokens: primaryTopicForCanonical.essentialTokens,
+    });
 
     const analysisHost = analysisHostFromUrl;
     const hasSearchExposure =
@@ -536,11 +558,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
     const paragraphStats = analyzeParagraphs(html, headings, searchQuestions, 3);
     let paragraphScore = paragraphStatsToScore(paragraphStats, { isFaqLikePage });
 
-    const searchQuestionCovered = computeSearchQuestionCoverage(
-      pageQuestions,
-      searchQuestions,
-      contentForAnalysis
-    );
+    const searchQuestionCovered = computeSearchQuestionCoverage(searchQuestions, coverageMatchInput);
     const questionCoverageScore =
       searchQuestions.length > 0
         ? Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100)
@@ -981,6 +999,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       url,
       normalizedUrl: normalizeUrl(url),
       analyzedAt: new Date().toISOString(),
+      geoConfigVersion,
       pageType,
       ...(editorialSubtypePayload
         ? {
@@ -991,6 +1010,8 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       meta,
       seedKeywords,
       pageQuestions,
+      searchEvidence,
+      canonicalSearchQuestions: searchQuestions,
       searchQuestions,
       searchQuestionCovered,
       questionClusters: [],
@@ -1042,12 +1063,8 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       editorialSubtypeDebug: coreResult.editorialSubtypeDebug,
     });
 
-    const uncoveredQuestions = findUncoveredQuestions(
-      pageQuestions,
-      searchQuestions,
-      effectiveContentText
-    );
-    const recResult = await generateGeoRecommendations(uncoveredQuestions, issues, {
+    const uncoveredQuestions = findUncoveredQuestions(searchQuestions, coverageMatchInput);
+    const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
       searchQuestions,
       pageQuestions,
       pageType,
@@ -1055,60 +1072,14 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       geoOpportunities: opportunities,
       geoIssues,
       axisScores: coreResult.axisScores,
+      meta: coreResult.meta,
+      textSample: effectiveContentText.slice(0, 4000),
+      contentQuality: coreResult.contentQuality,
+      reviewLike: Boolean((coreResult as { reviewLike?: boolean }).reviewLike),
+      hasReviewSchema,
+      limitedAnalysis: coreResult.limitedAnalysis,
+      seedKeywords: coreResult.seedKeywords,
     });
-    let recommendations: AnalysisResult['recommendations'];
-    if (recResult && typeof recResult === 'object' && 'error' in recResult && recResult.error === 'quota_exceeded') {
-      llmStatuses.push({
-        feature: 'recommendations',
-        status: 'skipped_quota',
-        retryAfterSec: recResult.retryAfterSec,
-        message: recResult.message ?? '요청이 많아 잠시 후 다시 시도해주세요.',
-      });
-      recommendations = generateTemplateRecommendations({
-        pageType,
-        uncoveredQuestions,
-        issues,
-        seedKeywords: coreResult.seedKeywords,
-        metaTitle: meta.title ?? null,
-        editorialSubtype: coreResult.editorialSubtype,
-      });
-    } else if (recResult && !('error' in recResult)) {
-      llmStatuses.push({ feature: 'recommendations', status: 'ok' });
-      recommendations = recResult;
-    } else {
-      recommendations = generateTemplateRecommendations({
-        pageType,
-        uncoveredQuestions,
-        issues,
-        seedKeywords: coreResult.seedKeywords,
-        metaTitle: meta.title ?? null,
-        editorialSubtype: coreResult.editorialSubtype,
-      });
-    }
-
-    // If editorial and review-like, gently augment recommendations with review-specific templates
-    try {
-      if (pageType === 'editorial' && (coreResult as any).reviewLike && recommendations) {
-        recommendations.actionPlan = recommendations.actionPlan || { suggestedHeadings: [], suggestedBlocks: [] , priorityNotes: [] };
-        const curHeads = recommendations.actionPlan.suggestedHeadings ?? [];
-        const curBlocks = recommendations.actionPlan.suggestedBlocks ?? [];
-        const curNotes = recommendations.actionPlan.priorityNotes ?? [];
-
-        const reviewHeads = ['Pros / Cons', 'Verdict (Short Summary)', 'Comparison criteria'];
-        const reviewBlocks = [
-          'Pros/Cons block example:\n- Pros: \n- Cons: \n- Recommended for: (who should buy/use this)',
-          'Verdict example:\nOne-line verdict (recommendation) + 1-sentence rationale.',
-          'Comparison criteria example:\n- Performance (W)\n- Weight (g)\n- Battery life (min)\n- Price (KRW)\n- Portability (foldable/compact)'
-        ];
-        const reviewNote = '리뷰형 권장: Pros/Cons · 간단한 Verdict · 비교 기준을 명확히 기재하세요.';
-
-        recommendations.actionPlan.suggestedHeadings = Array.from(new Set([...curHeads, ...reviewHeads]));
-        recommendations.actionPlan.suggestedBlocks = Array.from(new Set([...curBlocks, ...reviewBlocks]));
-        recommendations.actionPlan.priorityNotes = Array.from(new Set([...(recommendations.actionPlan.priorityNotes ?? []), reviewNote]));
-      }
-    } catch (e) {
-      // noop
-    }
 
     if (shouldLogGeoScoreAxis(url)) {
       const recLlm = llmStatuses.find((s) => s.feature === 'recommendations');
