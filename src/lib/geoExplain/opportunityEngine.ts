@@ -8,6 +8,7 @@ import type {
   PageType,
 } from '../analysisTypes';
 import { getEditorialSubtypeTone, refineOpportunityForEditorialSubtype } from './editorialSubtypeWording';
+import { refineOpportunityForPlatform } from './platformIssueWording';
 
 const WEAK_AXIS = 45;
 
@@ -52,6 +53,14 @@ const ISSUE_TO_OPPORTUNITY: Partial<
     impact: 'high',
     title: 'Meta description 작성',
     rationale: '요약형 description은 AI 스니펫·인용에 활용됩니다.',
+  },
+  desc_og_only: {
+    id: 'opp_meta_desc_consistency',
+    improvesAxis: 'structure',
+    impact: 'medium',
+    title: 'Meta description 일관성',
+    rationale:
+      'og:description만 있는 경우에도 스니펫 신호는 있으나, 표준 meta description을 맞추면 검색·AI 크롤러 간 일관성이 좋아집니다.',
   },
   author: {
     id: 'opp_add_author_trust',
@@ -198,9 +207,10 @@ export function runOpportunityEngine(
     out.push(t);
   }
 
+  let opportunities = out;
   const editorialTone = getEditorialSubtypeTone(result);
   if (editorialTone) {
-    return out.map((o) => refineOpportunityForEditorialSubtype(o, editorialTone));
+    opportunities = opportunities.map((o) => refineOpportunityForEditorialSubtype(o, editorialTone));
   }
-  return out;
+  return opportunities.map((o) => refineOpportunityForPlatform(o, result.platform));
 }

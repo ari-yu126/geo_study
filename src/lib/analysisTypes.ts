@@ -54,6 +54,54 @@ export interface GeoScoreBlendDebug {
   commerceBlendedScore?: number;
 }
 
+/** Answerability audit — per config rule + heuristics (debug only; not a second scorer) */
+export interface AnswerabilityRuleDebugRow {
+  id: string;
+  label?: string;
+  check: string;
+  threshold?: number;
+  maxPoints: number;
+  earnedPoints: number;
+  passed: boolean;
+  skippedForPageType?: boolean;
+}
+
+export interface AnswerabilitySignalsDebug {
+  firstParagraphLength: number;
+  firstParagraphMeetsMinLength: boolean;
+  hasDefinitionPattern: boolean;
+  quotableSentenceCount: number;
+  faqLikeHeadingCount: number;
+  recommendationOrConclusionSentenceCount: number;
+  introDirectAnswerHeuristic: boolean;
+  pageQuestionsExtractedCount: number;
+}
+
+export interface AnswerabilityDebug {
+  rawEarned: number;
+  rawMax: number;
+  ruleEnginePercent: number;
+  finalPercent: number;
+  dataPageFloorApplied: boolean;
+  editorialThinDomBoostApplied: boolean;
+  /**
+   * Editorial-only: gate signal count. Strict: strong verdict signals (max 4), need ≥3.
+   * Blog relaxed (`editorialSubtype === 'blog'`): structure/question/clarity buckets (max 3), need ≥2.
+   */
+  editorialQualityDimensionsMet?: number;
+  /** Editorial-only: true when answerability was capped due to the editorial quality gate. */
+  editorialQualityGateApplied?: boolean;
+  ruleRows: AnswerabilityRuleDebugRow[];
+  signals: AnswerabilitySignalsDebug;
+}
+
+/** Human-readable why the GEO score is high/low — generated for UI, not scoring. */
+export interface GeoScoreExplanation {
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+}
+
 export interface GeoScores {
   structureScore: number;
   answerabilityScore: number;
@@ -71,6 +119,26 @@ export interface GeoScores {
   citationFallbackDebug?: CitationFallbackDebug;
   /** Optional: monthly vs fixed blend breakdown for calibration / UI */
   scoreBlendDebug?: GeoScoreBlendDebug;
+  /** Per-rule + heuristic signals — editorial answerability audit (not used in scoring math) */
+  answerabilityDebug?: AnswerabilityDebug;
+  /** Editorial-only post-blend quality tuning (penalty/boost); not from monthly GEO config */
+  qualityAdjustmentDebug?: {
+    penalty: number;
+    boost: number;
+    finalAdjustment: number;
+  };
+  /** Naver editorial: extra finalScore cut for weak / promo signal (post-audit) */
+  finalWeakBlogPenaltyDebug?: {
+    applied: boolean;
+    /** Points subtracted from finalScore (0–10) */
+    amount: number;
+  };
+  /** Editorial-only: boost strong paragraph+answerability pages (post-audit) */
+  editorialContentBoostDebug?: {
+    applied: boolean;
+    /** Points added to finalScore (0–10) */
+    amount: number;
+  };
 }
 
 export interface ParagraphAnalysis {
@@ -168,17 +236,36 @@ export interface GeoRecommendations {
   trace?: GeoRecommendationTrace;
 }
 
+/**
+ * Hosting / CMS surface — independent of pageType (editorial/commerce/video) and editorialSubtype.
+ * Used for issue guidance and publish-date handling; scoring does not branch on this yet.
+ */
+export type PlatformType =
+  | 'self_hosted'
+  | 'naver_blog'
+  | 'tistory'
+  | 'brunch'
+  | 'wordpress'
+  | 'youtube'
+  | 'commerce_platform'
+  | 'unknown';
+
 export interface AnalysisResult {
+  /** User-submitted URL (trimmed). Primary UI display; may differ from canonical. */
   url: string;
+  /** Canonical URL for cache keys, dedupe, and internal identity (e.g. Naver m.blog, YouTube watch?v=). */
   normalizedUrl: string;
   analyzedAt: string;
   /** Active `geo_scoring_config.version` at analysis time — used for cache invalidation when config changes */
   geoConfigVersion?: string | null;
   /** 페이지 타입 (editorial/video/commerce) — profiles[pageType] 선택용 */
   pageType?: PageType;
+  /** Hosting platform from URL/path heuristics (e.g. naver_blog, tistory). Not a scoring input yet. */
+  platform?: PlatformType;
   /**
    * Editorial-only: article vs corporate/help-site context for explainability / recommendations tone.
-   * Does not change scoring or top-level pageType.
+   * `blog` also selects the relaxed editorial answerability quality gate (2 informational buckets vs 3 verdict signals).
+   * Does not change top-level pageType.
    */
   editorialSubtype?: EditorialSubtype;
   editorialSubtypeDebug?: EditorialSubtypeDebug;
@@ -224,6 +311,24 @@ export interface AnalysisResult {
   /** True when article body text/chunks were too thin for reliable paragraph scoring */
   extractionIncomplete?: boolean;
   extractionSource?: 'server' | 'headless';
+  /**
+   * First successful server HTML fetch URL (web path). May differ from normalizedUrl when Naver
+   * mobile fetch fails and PC/PostView fallback succeeds. Undefined for YouTube-only pipeline.
+   */
+  analysisFetchTargetUrl?: string;
+  /** Naver blog: HTML came from blog.naver.com / PostView after mobile+headless mobile could not yield usable body */
+  naverFetchUsedPcFallback?: boolean;
+  /** Shown when Naver analysis used PC fallback — scores may differ from m.blog-only analysis */
+  analysisFetchWarning?: string | null;
+  /** Naver blog: Playwright was used to load m.blog before accepting fallback */
+  naverMobileFetchUsedHeadless?: boolean;
+  /** Set when naver_blog + editorial injects `blog_low_info_density` fallback issue */
+  weakBlogFallbackApplied?: boolean;
+  /**
+   * Hosting limitations surfaced instead of technical SEO audit items (e.g. Naver Blog).
+   * Populated by deriveAuditIssues; does not affect scoring.
+   */
+  platformConstraints?: PlatformConstraint[];
 }
 
 export type AuditPriority = 'high' | 'medium' | 'low';
@@ -351,6 +456,15 @@ export interface PassedCheck {
   position?: { top: number; left: number; width: number; height: number };
 }
 
+/** Non-actionable platform limits (e.g. Naver Blog: no editable meta / JSON-LD). Audit UI only; does not change scores. */
+export interface PlatformConstraint {
+  id: string;
+  label: string;
+  description: string;
+  /** Actionable substitute for the writer (plain language). */
+  alternative: string;
+}
+
 export interface AuditIssue {
   id: string;
   number: number;
@@ -431,6 +545,8 @@ export interface GeoScoringConfig {
   };
 
   answerabilityRules?: ScoringRule[];
+  /** Blog/editorial pages (non-commerce, non–data-heavy). Falls back to engine default when omitted. */
+  answerabilityRulesEditorial?: ScoringRule[];
   trustRules?: ScoringRule[];
 
   issueRules: IssueRule[];
@@ -486,8 +602,25 @@ export interface GeoScoringProfile {
   queryTemplates: string[];
 }
 
+/** Signals for blog/editorial answerability profile only (see editorialBlogAnswerability.ts) */
+export interface EditorialBlogSignals {
+  introTakeaway: boolean;
+  recoConclusionCount: number;
+  prosConsOrComparison: boolean;
+  audienceGuidance: boolean;
+  listWithGuidance: boolean;
+  choiceLanguage: boolean;
+  titleIntroAligned: boolean;
+  decisiveNonNumericCount: number;
+  pageQuestionCount: number;
+  listCount: number;
+  faqLikeHeadingCount: number;
+}
+
 export interface ContentQuality {
   contentLength: number;
+  /** Populated in htmlAnalyzer — used when editorial (non–data-heavy) answerability profile runs */
+  editorialBlogSignals?: EditorialBlogSignals;
   tableCount: number;
   listCount: number;
   h2Count: number;
@@ -495,6 +628,10 @@ export interface ContentQuality {
   imageCount: number;
   hasStepStructure: boolean;
   quotableSentenceCount: number;
+  /** Debug: strict quotable pass count (htmlAnalyzer editorial path) */
+  quotableAcceptedCount?: number;
+  /** Debug: strict quotable reject count */
+  quotableRejectedCount?: number;
   firstParagraphLength: number;
   hasDefinitionPattern: boolean;
   hasPriceInfo: boolean;
@@ -521,6 +658,12 @@ export interface ContentQuality {
 export interface TrustSignals {
   hasAuthor: boolean;
   hasPublishDate: boolean;
+  /** True if meta tags (e.g. article:published_time) contributed to hasPublishDate */
+  publishDateFromMeta?: boolean;
+  /** True if JSON-LD or microdata (itemprop datePublished) contributed */
+  publishDateFromStructuredData?: boolean;
+  /** True if visible on-page / hosted-template date text contributed */
+  publishDateFromVisibleUi?: boolean;
   hasModifiedDate: boolean;
   hasContactLink: boolean;
   hasAboutLink: boolean;
@@ -545,7 +688,22 @@ export interface PageFeatures {
   hasReviewSchema?: boolean;
   /** 쇼핑/상품 관련 JSON-LD (Product, ItemList, Offer) 존재 */
   hasProductSchema?: boolean;
+  /** `<meta name="description">` content length (0 if missing) */
   descriptionLength: number;
+  /** True when standard meta description tag is present */
+  hasMetaDescription?: boolean;
+  /** True when `<meta property="og:description">` is present */
+  hasOgDescription?: boolean;
+  /**
+   * Length for description-length scoring: meta description if present, else og:description.
+   * Used for desc_length_min / desc_length_range when meta is absent but OG exists.
+   */
+  effectiveDescriptionLength?: number;
   contentQuality: ContentQuality;
   trustSignals: TrustSignals;
+  /**
+   * Search-question ↔ body match (0–100). Used for editorial answerability quality gate only;
+   * not an extraction change. Kept separate from questionCoverage (Tavily coverage %).
+   */
+  questionMatchScore?: number;
 }

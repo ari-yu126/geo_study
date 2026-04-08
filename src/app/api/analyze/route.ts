@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { normalizeUrl } from '@/lib/normalizeUrl';
+import { normalizeUrl, sanitizeIncomingAnalyzeUrl } from '@/lib/normalizeUrl';
 import { runAnalysis } from '@/lib/runAnalysis';
 import type { AnalysisResult } from '@/lib/analysisTypes';
 import {
@@ -12,15 +12,16 @@ import { loadActiveScoringConfig } from '@/lib/scoringConfigLoader';
 import { saveGeoAnalysisResult } from '@/lib/saveGeoAnalysisResult';
 
 // 타입들을 외부에서도 사용할 수 있도록 re-export
-export type { 
-  AnalysisMeta, 
-  SeedKeyword, 
-  SearchQuestion, 
-  QuestionCluster, 
-  GeoScores, 
+export type {
+  AnalysisMeta,
+  SeedKeyword,
+  SearchQuestion,
+  QuestionCluster,
+  GeoScores,
   AnalysisResult,
   SearchSource,
   ContentQuality,
+  PlatformType,
 } from '@/lib/analysisTypes';
 
 // Analysis uses only loadActiveScoringConfig() (read active row). It never rebuilds GEO config,
@@ -32,6 +33,11 @@ function withResolvedGeoConfigVersion(
   currentGeoConfigVersion: string | null
 ): AnalysisResult {
   return { ...r, geoConfigVersion: r.geoConfigVersion ?? currentGeoConfigVersion ?? null };
+}
+
+/** User-facing URL for UI: always the sanitized request URL, never canonical-only (e.g. m.blog). */
+function withRequestDisplayUrl(r: AnalysisResult, requestUrl: string): AnalysisResult {
+  return { ...r, url: requestUrl };
 }
 
 // TODO: analysis_history 테이블 컬럼명이 다를 경우 이 부분을 실제 스키마에 맞게 조정할 것
@@ -158,7 +164,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const url = body.url as string;
+    const url = sanitizeIncomingAnalyzeUrl(body.url as string);
     const normalizedUrl = normalizeUrl(url);
 
     const forceRefresh = body.forceRefresh === true;
@@ -212,7 +218,10 @@ export async function POST(req: Request) {
           {
             fromCache: true,
             cacheLayer: 'memory',
-            result: withResolvedGeoConfigVersion(safeMem, currentGeoConfigVersion),
+            result: withRequestDisplayUrl(
+              withResolvedGeoConfigVersion(safeMem, currentGeoConfigVersion),
+              url
+            ),
           },
           { status: 200 }
         );
@@ -255,7 +264,10 @@ export async function POST(req: Request) {
           {
             fromCache: true,
             cacheLayer: 'supabase',
-            result: withResolvedGeoConfigVersion(safeCached, currentGeoConfigVersion),
+            result: withRequestDisplayUrl(
+              withResolvedGeoConfigVersion(safeCached, currentGeoConfigVersion),
+              url
+            ),
           },
           { status: 200 }
         );
@@ -275,13 +287,16 @@ export async function POST(req: Request) {
       })
     );
     const appOrigin = typeof req.url === 'string' ? new URL(req.url).origin : undefined;
-    const result = await runAnalysis(url, { appOrigin });
+    // Always analyze using canonical normalizedUrl so PC / PostView / m.blog inputs share identical
+    // fetch + scoring paths (inputUrl inside runAnalysis matches normalizedUrl for Naver posts).
+    const result = await runAnalysis(normalizedUrl, { appOrigin });
+    const displayResult = withRequestDisplayUrl(result, url);
 
-    setMemoryCachedAnalysis(normalizedUrl, result);
+    setMemoryCachedAnalysis(normalizedUrl, displayResult);
 
     // 3) DB에 저장 (실패해도 분석 결과는 반환)
     try {
-      await saveAnalysisResult(result);
+      await saveAnalysisResult(displayResult);
     } catch (saveErr) {
       console.warn('Supabase 저장 실패 (분석 결과는 반환):', saveErr);
     }
@@ -290,7 +305,7 @@ export async function POST(req: Request) {
       {
         fromCache: false,
         cacheLayer: 'none',
-        result: withResolvedGeoConfigVersion(result, currentGeoConfigVersion),
+        result: withResolvedGeoConfigVersion(displayResult, currentGeoConfigVersion),
       },
       { status: 200 }
     );

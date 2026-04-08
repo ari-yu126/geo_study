@@ -10,6 +10,7 @@ export const ISSUE_RULE_GEO_META: Record<
   no_tables: { axis: 'answerability', category: 'missing_signals' },
   title: { axis: 'structure', category: 'missing_signals' },
   desc: { axis: 'structure', category: 'missing_signals' },
+  desc_og_only: { axis: 'structure', category: 'weak_signals' },
   author: { axis: 'trust', category: 'missing_signals' },
   pub_date: { axis: 'trust', category: 'missing_signals' },
   og: { axis: 'structure', category: 'weak_signals' },
@@ -20,6 +21,7 @@ export const ISSUE_RULE_GEO_META: Record<
   questions: { axis: 'answerability', category: 'missing_signals' },
   content_len: { axis: 'answerability', category: 'weak_signals' },
   content_deep: { axis: 'answerability', category: 'opportunities' },
+  blog_low_info_density: { axis: 'answerability', category: 'weak_signals' },
 };
 
 export function resolveIssueRuleMeta(ruleId: string): {
@@ -57,8 +59,8 @@ export const PASSED_REASON_INFO: Record<string, { label: string; reason: string 
     reason: 'AI가 페이지 주제를 빠르게 파악할 수 있습니다.',
   },
   desc: {
-    label: 'Meta Description 작성됨',
-    reason: 'SGE 답변 생성 시 직접 인용될 수 있습니다.',
+    label: 'Meta 또는 OG 설명 존재',
+    reason: 'meta description 또는 og:description이 있어 AI·스니펫 맥락 파악에 도움이 됩니다.',
   },
   og: {
     label: 'OG 태그 설정됨',

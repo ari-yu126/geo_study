@@ -115,6 +115,69 @@ export function computeExtractionMetrics(html: string): ExtractionMetrics {
   return { rawBodyTextLength, paragraphLikeCount, citationExtractedChunkCount };
 }
 
+/** Extra signals for Naver m.blog — SmartEditor uses div modules, not always <p>. */
+export type NaverMobileBodyMetrics = ExtractionMetrics & {
+  headingCount: number;
+  /** Text length from Naver post containers (se-*, postView) */
+  naverModuleTextLength: number;
+  /** Approximate SmartEditor / post body blocks (div-based) */
+  naverModuleBlockCount: number;
+  jsonLdSupplementalLength: number;
+  /** max(raw, naver modules, JSON-LD article text) */
+  meaningfulBodyLength: number;
+};
+
+/**
+ * Metrics for deciding if m.blog HTML is usable before PC fallback.
+ * Prefer this over raw {@link computeExtractionMetrics} alone for Naver mobile.
+ */
+export function computeNaverMobileBodyMetrics(html: string): NaverMobileBodyMetrics {
+  const base = computeExtractionMetrics(html);
+  const $ = cheerio.load(html);
+  $('script, style, noscript').remove();
+
+  const headingCount = $('h1, h2, h3, h4').length;
+
+  const naverRoots = $('.se-main-container, #postView, .se-viewer, article.se-fs, article').toArray();
+  let naverModuleTextLength = 0;
+  if (naverRoots.length > 0) {
+    for (const el of naverRoots) {
+      const t = $(el).text().replace(/\s+/g, ' ').trim().length;
+      naverModuleTextLength = Math.max(naverModuleTextLength, t);
+    }
+  }
+  if (naverModuleTextLength < 120) {
+    let blob = '';
+    $('.se-module-text, .se-text, .se_component_wrap, [class*="se-module"]').each((_, el) => {
+      blob += $(el).text();
+    });
+    const alt = blob.replace(/\s+/g, ' ').trim().length;
+    naverModuleTextLength = Math.max(naverModuleTextLength, alt);
+  }
+
+  const naverModuleBlockCount =
+    $('.se-module-text, .se-text, .se_component_wrap, [class*="se-module-text"]').length +
+    $('main p, article p, .se-main-container p, #postView p').length;
+
+  const jsonLdBlob = extractSupplementalTextFromJsonLd(html);
+  const jsonLdSupplementalLength = jsonLdBlob.trim().length;
+
+  const meaningfulBodyLength = Math.max(
+    base.rawBodyTextLength,
+    naverModuleTextLength,
+    jsonLdSupplementalLength
+  );
+
+  return {
+    ...base,
+    headingCount,
+    naverModuleTextLength,
+    naverModuleBlockCount,
+    jsonLdSupplementalLength,
+    meaningfulBodyLength,
+  };
+}
+
 /**
  * Pulls headline / description / articleBody from JSON-LD when the DOM body is thin (SSR shell).
  */

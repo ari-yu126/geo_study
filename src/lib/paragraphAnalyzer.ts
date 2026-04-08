@@ -1,5 +1,6 @@
 import * as cheerio from 'cheerio';
-import type { ParagraphStats } from './analysisTypes';
+import { countRecoOrConclusionSentences } from './answerabilityDebug';
+import type { ContentQuality, ParagraphStats } from './analysisTypes';
 
 interface Paragraph {
   text: string;
@@ -444,6 +445,31 @@ export function paragraphStatsToScore(
   score += Math.min(50, (stats.dataDenseBlockCount ?? 0) * 3);
 
   return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+/**
+ * Relaxed paragraph score for editorialSubtype === 'blog' (e.g. Naver blog).
+ * De-emphasizes definitionRatio / summaryParagraphCount (embedded in paragraphStatsToScore) by
+ * taking max(original, this) instead of changing the base formula for all pages.
+ */
+export function computeBlogRelaxedParagraphScore(
+  cq: ContentQuality,
+  bodyTextSample: string
+): number {
+  const listCount = cq.listCount ?? 0;
+  const recoCount = countRecoOrConclusionSentences(bodyTextSample);
+  const decisive = cq.editorialBlogSignals?.decisiveNonNumericCount ?? 0;
+  const fpl = cq.firstParagraphLength ?? 0;
+  const len = Math.max(0, cq.contentLength ?? 0);
+
+  let score = 0;
+  score += Math.min(30, 5 + Math.round(len / 140));
+  score += Math.min(20, Math.round(Math.max(0, fpl - 30) / 5));
+  score += Math.min(16, listCount * 5);
+  score += Math.min(14, recoCount * 4);
+  score += Math.min(16, decisive * 4);
+
+  return Math.max(0, Math.min(100, score));
 }
 
 export function computeChunkInfoDensity(text: string): number {

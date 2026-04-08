@@ -1,4 +1,5 @@
 import type { GeoScoringConfig, YouTubePassedCheckRule } from './analysisTypes';
+import { DEFAULT_EDITORIAL_ANSWERABILITY_RULES } from './editorialBlogAnswerability';
 
 const DEFAULT_YOUTUBE_PASSED_CHECK_RULES: YouTubePassedCheckRule[] = [
   { id: 'yt_title_opt', label: '제목 최적화', reason: '제목에 시드 키워드가 포함되어 검색·AI 인용 노출에 유리합니다.', check: 'yt_title_opt' },
@@ -20,7 +21,13 @@ export const DEFAULT_SCORING_CONFIG: GeoScoringConfig = {
   // SEO Structure (30%) — 기술 구조
   structureRules: [
     { id: 'title_exists', label: 'Title 태그 존재', check: 'title_exists', points: 12 },
-    { id: 'desc_exists', label: 'Meta Description 존재', check: 'desc_exists', points: 10 },
+    { id: 'meta_desc', label: 'Meta Description (name=description)', check: 'meta_description_present', points: 10 },
+    {
+      id: 'og_desc_partial',
+      label: 'OG description only (partial signal)',
+      check: 'og_only_description_partial_credit',
+      points: 5,
+    },
     { id: 'desc_length', label: 'Description 길이 적절', check: 'desc_length_range', points: 6 },
     { id: 'h1_single', label: 'H1 태그 단일 사용', check: 'h1_single', points: 8 },
     { id: 'h2_depth', label: 'H2 섹션 구조화', check: 'h2_count_min', points: 8, threshold: 2 },
@@ -46,6 +53,9 @@ export const DEFAULT_SCORING_CONFIG: GeoScoringConfig = {
     { id: 'images', label: '시각 자료 포함', check: 'images_min', points: 4, threshold: 1 },
     { id: 'step', label: '단계별 가이드 구조', check: 'has_step_structure', points: 6 },
   ],
+
+  /** Editorial / blog pages (non-commerce, non–data-heavy) — see editorialBlogAnswerability.ts */
+  answerabilityRulesEditorial: DEFAULT_EDITORIAL_ANSWERABILITY_RULES,
 
   // Trust & E-E-A-T (20%) — 신뢰 신호
   trustRules: [
@@ -115,10 +125,21 @@ export const DEFAULT_SCORING_CONFIG: GeoScoringConfig = {
     },
     {
       id: 'desc',
-      check: 'desc_exists',
-      label: 'Meta Description 누락',
-      description: '150자 내외의 핵심 답변이 포함된 description을 작성하세요.',
+      check: 'description_any_signal',
+      label: 'Meta / OG 설명 모두 없음',
+      description:
+        '표준 meta description과 og:description이 모두 없습니다. 검색·AI 스니펫에 쓸 한 줄 요약을 최소 하나는 제공하세요.',
       priority: 'high',
+      targetSelector: '_top',
+      targetIndex: 1,
+    },
+    {
+      id: 'desc_og_only',
+      check: 'meta_description_or_no_og',
+      label: 'Meta description 없음 (og:description만 있음)',
+      description:
+        'Meta description tag is not present, but og:description is available. This provides some descriptive signal, but a standard meta description would improve consistency.',
+      priority: 'medium',
       targetSelector: '_top',
       targetIndex: 1,
     },
@@ -189,7 +210,7 @@ export const DEFAULT_SCORING_CONFIG: GeoScoringConfig = {
   ],
 
   youtubePassedCheckRules: DEFAULT_YOUTUBE_PASSED_CHECK_RULES,
-  youtubeAllowedIssueIds: ['title', 'desc', 'og', 'canonical'],
+  youtubeAllowedIssueIds: ['title', 'desc', 'desc_og_only', 'og', 'canonical'],
   commerceDomains: [
     'coupang.com',
     'amazon.',

@@ -1,4 +1,5 @@
 import type { AnalysisResult } from "@/lib/analysisTypes";
+import { isHostedBlogPlatform } from "@/lib/geoExplain/platformIssueWording";
 import { isYouTubeUrl } from "@/lib/youtubeMetadataExtractor";
 
 function scoreColor(score: number, max: number): string {
@@ -40,6 +41,11 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
 
   const isVideo =
     result.pageType === "video" || isYouTubeUrl(result.url);
+  const hasMetaDesc = !!result.meta.description?.trim();
+  const hasOgDesc = !!result.meta.ogDescription?.trim();
+  const hostedBlog = isHostedBlogPlatform(result.platform);
+  const displayMetaOrOgSnippet =
+    result.meta.description?.trim() || result.meta.ogDescription?.trim() || "";
   const BG = "080C14";
   const SURFACE = "0F1623";
   const CARD = "141D2E";
@@ -115,8 +121,9 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
       s.addShape(pptx.ShapeType.roundRect, { x: 0.5, y: 4.05, w: 12, h: 1.15, fill: { color: CARD }, line: { color: BORDER, pt: 1 }, rectRadius: 0.12 });
       s.addText("Title", { x: 0.7, y: 4.12, w: 3, h: 0.25, fontSize: 9, color: MUTED, fontFace: "Arial" });
       s.addText(result.meta.title, { x: 0.7, y: 4.32, w: 11, h: 0.35, fontSize: 13, bold: true, color: TEXT, fontFace: "Arial" });
-      if (result.meta.description) {
-        s.addText(result.meta.description.slice(0, 120) + (result.meta.description.length > 120 ? "..." : ""), { x: 0.7, y: 4.72, w: 11, h: 0.4, fontSize: 10, color: MUTED, fontFace: "Arial", wrap: true });
+      if (displayMetaOrOgSnippet) {
+        const snippet = displayMetaOrOgSnippet.slice(0, 120) + (displayMetaOrOgSnippet.length > 120 ? "..." : "");
+        s.addText(snippet, { x: 0.7, y: 4.72, w: 11, h: 0.4, fontSize: 10, color: MUTED, fontFace: "Arial", wrap: true });
       }
     }
   }
@@ -307,7 +314,27 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
 
     const tips = [];
     if (!result.meta.title) tips.push({ title: "Title 태그 추가", tip: "페이지 주제를 담은 명확한 title을 설정하세요.", priority: "high" });
-    if (!result.meta.description) tips.push({ title: "Meta Description 작성", tip: "핵심 답변이 포함된 150자 내외의 description을 작성하세요.", priority: "high" });
+    if (!hasMetaDesc && !hasOgDesc) {
+      tips.push({
+        title: "Meta / OG 설명 누락",
+        tip: "표준 meta description과 og:description이 모두 없습니다. 최소 한 가지 요약 신호를 제공하세요.",
+        priority: "high",
+      });
+    } else if (!hasMetaDesc && hasOgDesc) {
+      if (hostedBlog) {
+        tips.push({
+          title: "도입 요약·제목 보강 (메타 미제공)",
+          tip: "제목을 검색 의도에 맞게 명확히 하고, 본문 맨 앞에 핵심 요약(2~4문장)과 주요 정보를 드러내세요. 호스팅 플랫폼에서는 HTML meta description을 직접 넣기 어려운 경우가 많습니다.",
+          priority: "medium",
+        });
+      } else {
+        tips.push({
+          title: "표준 Meta description 추가",
+          tip: "og:description은 일부 설명 신호를 제공합니다. 가능하면 `<meta name=\"description\">`을 추가해 검색·스니펫 일관성을 높이세요.",
+          priority: "medium",
+        });
+      }
+    }
     if (sc.structureScore < 60) tips.push({ title: "헤딩 구조 개선", tip: "H2 소제목을 질문형으로 재구성하고 본문 첫 단락에 핵심 답변을 배치하세요.", priority: "high" });
     if (sc.questionCoverage < 40) tips.push({ title: "FAQ 섹션 추가", tip: "사용자가 AI에게 물을 법한 질문-답변 블록을 본문에 추가하세요.", priority: "medium" });
     if (!result.meta.canonical) tips.push({ title: "Canonical URL 설정", tip: "중복 콘텐츠 방지를 위해 canonical 태그를 추가하세요.", priority: "medium" });
@@ -354,7 +381,7 @@ export async function exportToPPT(result: AnalysisResult): Promise<void> {
     s.addText("즉시 실행 가능한 개선 항목", { x: 4.3, y: 1.2, w: 8, h: 0.35, fontSize: 11, bold: true, color: TEXT, fontFace: "Arial" });
     const urgents: string[] = [];
     if (!result.meta.title) urgents.push("Title 태그 추가");
-    if (!result.meta.description) urgents.push("Meta Description 작성");
+    if (!hasMetaDesc && !hasOgDesc) urgents.push("Meta / OG 설명 보강");
     if (sc.structureScore < 60) urgents.push("헤딩 구조를 질문형으로 개선");
     if (sc.questionCoverage < 40) urgents.push("FAQ 섹션 추가");
     if (!result.meta.canonical) urgents.push("Canonical URL 설정");

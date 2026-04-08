@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, type ReactNode } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Shield,
   Lightbulb,
@@ -25,6 +26,7 @@ import type {
   FixExample,
   GeoIssue,
   PassedCheck,
+  PlatformConstraint,
 } from "@/lib/analysisTypes";
 import { dedupeGeoIssuesById } from "@/lib/geoExplain/issueEngine";
 import { GEO_UI_HIDE_COVERAGE_AND_PPT } from "../geoUiFlags";
@@ -53,6 +55,7 @@ import {
   getRecommendationLocale,
   RECOMMENDATION_SECTION_LABELS,
 } from "@/lib/recommendations/recommendationUiLabels";
+import { buildGeoScoreExplanation } from "@/lib/geoScoreExplanation";
 import ScoreGauge, { getGradeInfo } from "./ScoreGauge";
 
 const PRIORITY_COLORS: Record<string, { color: string; bg: string; border: string; label: string }> = {
@@ -67,7 +70,7 @@ function GeoIssueCard({
   activeIssueId,
   onIssueClick,
   auditIssueById,
-  showDebugRefs,
+  geoExplainDebugMode,
   hideCategoryBadge,
   axisFriendlyLabel,
 }: {
@@ -76,7 +79,8 @@ function GeoIssueCard({
   activeIssueId: string | null;
   onIssueClick: (id: string) => void;
   auditIssueById: (id: string) => AuditIssue | undefined;
-  showDebugRefs: boolean;
+  /** Dev-only + `?debug=true`: show full issue JSON under the card. */
+  geoExplainDebugMode: boolean;
   hideCategoryBadge?: boolean;
   /** User-facing focus label (no internal axis ids). */
   axisFriendlyLabel?: string;
@@ -86,7 +90,9 @@ function GeoIssueCard({
   const linked = auditIssueById(g.id);
   const fixExamples = linked?.fixExamples;
   const hasFixExamples = Boolean(fixExamples && fixExamples.length > 0);
-  const showFixPanel = isActive && (hasFixExamples || Boolean(g.fix?.trim()));
+  const hasFixGuide = Boolean(g.fix?.trim());
+  const hasExpandableDetail = hasFixExamples || hasFixGuide || geoExplainDebugMode;
+  const showDetailPanel = isActive && hasExpandableDetail;
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
       <button
@@ -96,11 +102,11 @@ function GeoIssueCard({
           alignItems: "flex-start",
           gap: 10,
           padding: "10px 12px",
-          borderRadius: showFixPanel ? "8px 8px 0 0" : 8,
+          borderRadius: showDetailPanel ? "8px 8px 0 0" : 8,
           borderTop: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
           borderRight: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
           borderLeft: `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
-          borderBottom: showFixPanel ? "none" : `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
+          borderBottom: showDetailPanel ? "none" : `1px solid ${isActive ? cfg.color + "66" : cfg.border}`,
           background: isActive ? cfg.bg : "transparent",
           cursor: "pointer",
           textAlign: "left",
@@ -158,7 +164,7 @@ function GeoIssueCard({
             >
               {axisFriendlyLabel ?? GEO_AXIS_LABEL[g.axis] ?? g.axis}
             </span>
-            {(hasFixExamples || g.fix?.trim()) &&
+            {hasExpandableDetail &&
               (isActive ? <ChevronUp size={14} style={{ color: "#5b6ef5", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />)}
           </div>
           <div
@@ -176,7 +182,7 @@ function GeoIssueCard({
           </div>
         </div>
       </button>
-      {isActive && showFixPanel && (
+      {isActive && showDetailPanel && (
         <div
           style={{
             border: `1px solid ${cfg.color}66`,
@@ -202,21 +208,23 @@ function GeoIssueCard({
               ))}
             </>
           )}
-          {showDebugRefs && g.sourceRefs && Object.keys(g.sourceRefs).length > 0 && (
-            <pre
-              style={{
-                margin: 0,
-                padding: "8px 12px",
-                fontSize: 10,
-                color: "#6d8099",
-                fontFamily: "var(--font-mono)",
-                borderTop: "1px solid #1a2436",
-                overflow: "auto",
-                maxHeight: 120,
-              }}
-            >
-              {JSON.stringify(g.sourceRefs, null, 2)}
-            </pre>
+          {geoExplainDebugMode && (
+            <div style={{ borderTop: hasFixGuide || hasFixExamples ? "1px solid #1a2436" : "none" }}>
+              <div style={{ fontSize: 11, color: "#6d8099", fontFamily: "var(--font-mono)", fontWeight: 600, padding: "8px 12px 4px" }}>Issue (debug JSON)</div>
+              <pre
+                style={{
+                  margin: 0,
+                  padding: "0 12px 10px",
+                  fontSize: 10,
+                  color: "#6d8099",
+                  fontFamily: "var(--font-mono)",
+                  overflow: "auto",
+                  maxHeight: 280,
+                }}
+              >
+                {JSON.stringify(g, null, 2)}
+              </pre>
+            </div>
           )}
         </div>
       )}
@@ -401,6 +409,8 @@ interface AuditPanelProps {
   analyzeMeta?: { fromCache: boolean; cacheLayer: string } | null;
   issues: AuditIssue[];
   passedChecks: PassedCheck[];
+  /** Client-derived or API: Naver Blog non-actionable technical items */
+  platformConstraints?: PlatformConstraint[];
   activeIssueId: string | null;
   onIssueClick: (id: string) => void;
   onReset: () => void;
@@ -558,6 +568,7 @@ export default function AuditPanel({
   analyzeMeta,
   issues,
   passedChecks,
+  platformConstraints: platformConstraintsProp,
   activeIssueId,
   onIssueClick,
   onReset,
@@ -568,11 +579,19 @@ export default function AuditPanel({
   exporting,
   reanalyzing,
 }: AuditPanelProps) {
+  const searchParams = useSearchParams();
+  /** Dev server only + `?debug=true`: show GEO issue/opportunity debug JSON in the panel. */
+  const geoExplainDebugMode =
+    process.env.NODE_ENV === "development" && searchParams.get("debug") === "true";
+
   const [filter, setFilter] = useState<"all" | "high" | "medium" | "low">("all");
   const [passedOpen, setPassedOpen] = useState(false);
   const [goldenOpen, setGoldenOpen] = useState(true);
   const [expandedPassedId, setExpandedPassedId] = useState<string | null>(null);
+  /** User-controlled URL field; not overwritten when analysis returns (avoids canonical URL replacing input). */
   const [urlInput, setUrlInput] = useState(result.url);
+  /** Last URL sent to / analyze (submit or re-analyze); used to enable/disable "분석" vs duplicate requests. */
+  const [committedUrl, setCommittedUrl] = useState(result.url);
   const [questionsExpanded, setQuestionsExpanded] = useState(false);
   const [opportunitiesOpen, setOpportunitiesOpen] = useState(true);
   const [aiWritingExamplesOpen, setAiWritingExamplesOpen] = useState(false);
@@ -629,6 +648,15 @@ export default function AuditPanel({
     setAiWritingDegraded(false);
     setAiWritingFromCache(false);
   }, [result.normalizedUrl]);
+
+  useEffect(() => {
+    if (!result) return;
+    console.log('[RESULT_DEBUG]', {
+      url: result.url,
+      normalizedUrl: result.normalizedUrl,
+      analysisFetchTargetUrl: result.analysisFetchTargetUrl,
+    });
+  }, [result]);
 
   const AI_WRITING_FETCH_COOLDOWN_MS = 4000;
 
@@ -750,6 +778,10 @@ export default function AuditPanel({
     .slice(0, 3);
   const gi = getGradeInfo(result.scores.finalScore);
   const categories = buildCategories(result);
+  const scoreExplanation = useMemo(() => {
+    if (!geoExplainDebugMode) return null;
+    return buildGeoScoreExplanation(result);
+  }, [result, geoExplainDebugMode]);
 
   const geo = hasGeoExplain(result);
   const geoExplain = result.geoExplain;
@@ -781,11 +813,21 @@ export default function AuditPanel({
   const focusByAxis = CONTENT_FOCUS_LABEL[recLocale];
   const copyUi = recLocale === "en" ? { copy: "Copy", copied: "Copied" } : { copy: "복사", copied: "복사됨" };
   const opportunities = geoExplain?.opportunities ?? [];
-  const showDebugRefs = typeof process !== "undefined" && process.env.NODE_ENV === "development";
+
+  const platformConstraints = platformConstraintsProp ?? result.platformConstraints;
 
   const auditIssueById = (id: string) => issues.find((i) => i.id === id);
 
   const geoIssueGroups = useGeoIssueList ? groupGeoIssuesByCategory(filteredGeoIssues) : [];
+
+  /**
+   * While reanalyzing: show the in-flight request URL (committedUrl / urlInput), not `result.normalizedUrl`.
+   * If the user edits the field during the request, show their draft (urlInput).
+   */
+  const userFacingUrlForLoadingUi =
+    reanalyzing && urlInput.trim() !== committedUrl.trim()
+      ? urlInput
+      : committedUrl.trim() || urlInput.trim();
 
   return (
     <aside
@@ -803,8 +845,8 @@ export default function AuditPanel({
     >
       {/* 헤더 - 고정 */}
       <div style={{ padding: "14px 16px 10px", borderBottom: "1px solid #1e2d45" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start", maxWidth: "calc(100% - 88px)" }}>
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start"}}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={{ fontSize: 12, color: "#818cf8", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
                 GEO Analyzer
@@ -832,43 +874,32 @@ export default function AuditPanel({
             </div>
             <div style={{ fontSize: 11, color: "#7a8da3", lineHeight: 1.45 }}>
               <span style={{ color: "#9ca3af" }}>월간 GEO 기준</span>
-              {" · "}
+              {" : "}
               <span style={{ fontFamily: "var(--font-mono)", color: "#c4d0e0" }}>
-                v{configVersion ?? result.geoConfigVersion ?? "—"}
+                {configVersion ?? result.geoConfigVersion ?? "—"}
+                {" "}
               </span>
               {configCreatedAt && (
-                <span>
-                  {" "}
-                  · 갱신{" "}
-                  {new Date(configCreatedAt)
-                    .toLocaleDateString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" })
-                    .replace(/\s/g, "")}
-                </span>
+                <p style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span>
+                    갱신{" "}
+                    {new Date(configCreatedAt)
+                      .toLocaleDateString("ko-KR", { year: "numeric", month: "2-digit", day: "2-digit" })
+                      .replace(/\s/g, "")}
+                  </span>
+                  {configDaysLeft != null && <span>(다음 기준 갱신까지 약 {configDaysLeft}일)</span>}
+                </p>
               )}
-              {configDaysLeft != null && <span> · 다음 기준 갱신까지 약 {configDaysLeft}일</span>}
             </div>
           </div>
-          <button
-            onClick={onReset}
-            style={{
-              background: "transparent",
-              border: "1px solid #1e2d45",
-              borderRadius: 6,
-              color: "#8b9cb3",
-              fontSize: 14,
-              padding: "4px 12px",
-              cursor: "pointer",
-              fontFamily: "var(--font-body)",
-            }}
-          >
-            ← 새 분석
-          </button>
         </div>
         <form
           onSubmit={(e) => {
             e.preventDefault();
             const trimmed = urlInput.trim();
-            if (trimmed && trimmed !== result.url) onNavigate(trimmed);
+            if (!trimmed || trimmed === committedUrl.trim()) return;
+            setCommittedUrl(trimmed);
+            onNavigate(trimmed);
           }}
           style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}
         >
@@ -878,7 +909,8 @@ export default function AuditPanel({
             )}
             <input
               type="url"
-              value={urlInput}
+              value={reanalyzing ? userFacingUrlForLoadingUi : urlInput}
+              title={geoExplainDebugMode ? `display: user URL · normalized: ${result.normalizedUrl}` : undefined}
               onChange={(e) => setUrlInput(e.target.value)}
               placeholder="https://example.com"
               style={{
@@ -901,7 +933,7 @@ export default function AuditPanel({
           </div>
           <button
             type="submit"
-            disabled={reanalyzing || !urlInput.trim() || urlInput.trim() === result.url}
+            disabled={reanalyzing || !urlInput.trim() || urlInput.trim() === committedUrl.trim()}
             style={{
               flexShrink: 0,
               padding: "6px 10px",
@@ -912,7 +944,7 @@ export default function AuditPanel({
               fontSize: 12,
               fontWeight: 700,
               cursor: reanalyzing ? "not-allowed" : "pointer",
-              opacity: (reanalyzing || !urlInput.trim() || urlInput.trim() === result.url) ? 0.4 : 1,
+              opacity: (reanalyzing || !urlInput.trim() || urlInput.trim() === committedUrl.trim()) ? 0.4 : 1,
               transition: "opacity 0.2s",
               fontFamily: "var(--font-mono)",
             }}
@@ -924,7 +956,10 @@ export default function AuditPanel({
             disabled={reanalyzing}
             title="캐시를 쓰지 않고 이 URL을 처음부터 다시 분석합니다"
             onClick={() => {
-              onNavigate(result.url, { forceRefresh: true });
+              const t = urlInput.trim();
+              if (!t) return;
+              setCommittedUrl(t);
+              onNavigate(t, { forceRefresh: true });
             }}
             style={{
               flexShrink: 0,
@@ -1105,15 +1140,52 @@ export default function AuditPanel({
             <div style={{ fontSize: 11, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}>
               종합 GEO 점수
             </div>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 4 }}>
+            {/* <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 4 }}>
               <span style={{ fontFamily: "var(--font-display)", fontSize: 24, fontWeight: 800, color: gi.color }}>{result.scores.finalScore}</span>
               <span style={{ fontSize: 12, color: "#7a8da3" }}>/ 100</span>
-            </div>
+            </div> */}
             <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 99, background: `${gi.color}18`, border: `1px solid ${gi.color}44`, color: gi.color, fontWeight: 600, display: "inline-block", marginTop: 4 }}>
               {gi.label}
             </span>
           </div>
         </div>
+
+        {scoreExplanation && (
+          <div
+            style={{
+              marginBottom: 14,
+              padding: "12px 12px",
+              borderRadius: 10,
+              background: "rgba(91,110,245,0.06)",
+              border: "1px solid rgba(91,110,245,0.18)",
+            }}
+          >
+            <div style={{ fontSize: 10, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              점수 해설 (디버그)
+            </div>
+            <p style={{ fontSize: 12, color: "#c4d0e0", lineHeight: 1.55, margin: 0 }}>{scoreExplanation.summary}</p>
+            {scoreExplanation.strengths.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: "#34d399", fontWeight: 600, marginBottom: 4 }}>강점</div>
+                <ul style={{ margin: 0, paddingLeft: 18, color: "#a8b8cc", fontSize: 11, lineHeight: 1.5 }}>
+                  {scoreExplanation.strengths.map((line, i) => (
+                    <li key={`se-s-${i}`}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {scoreExplanation.weaknesses.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: "#f5a623", fontWeight: 600, marginBottom: 4 }}>보완 포인트</div>
+                <ul style={{ margin: 0, paddingLeft: 18, color: "#a8b8cc", fontSize: 11, lineHeight: 1.5 }}>
+                  {scoreExplanation.weaknesses.map((line, i) => (
+                    <li key={`se-w-${i}`}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 12px", marginBottom: 14 }}>
           {categories.map((cat) => {
@@ -1266,6 +1338,48 @@ export default function AuditPanel({
         )}
       </div>
 
+      {/* 플랫폼 제약 (네이버 블로그 등): 기술 SEO는 작성자가 직접 수정 불가 */}
+      {platformConstraints && platformConstraints.length > 0 && (
+        <div style={{ ...CARD_STYLE, marginBottom: 10 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#a78bfa",
+              fontFamily: "var(--font-mono)",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              marginBottom: 8,
+            }}
+          >
+            플랫폼 제약
+          </div>
+          <p style={{ fontSize: 11, color: "#7a8da3", lineHeight: 1.5, marginBottom: 10 }}>
+            아래 항목은 호스팅 환경상 직접 수정이 어렵습니다. 감점이 아니라 &quot;조치 불가&quot;에 가깝게 이해하세요.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {platformConstraints.map((c) => (
+              <div
+                key={c.id}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid rgba(167,139,250,0.25)",
+                  background: "rgba(167,139,250,0.06)",
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#ddd6fe", marginBottom: 4 }}>{c.label}</div>
+                <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55, marginBottom: 6 }}>{c.description}</div>
+                <div style={{ fontSize: 12, color: "#5eead4", lineHeight: 1.5 }}>
+                  <span style={{ fontWeight: 600, color: "#7dd3fc" }}>대안 · </span>
+                  {c.alternative}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 4. 발견된 이슈 */}
       <div style={CARD_STYLE}>
         <div style={{ fontSize: 12, fontWeight: 600, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
@@ -1336,7 +1450,7 @@ export default function AuditPanel({
                           activeIssueId={activeIssueId}
                           onIssueClick={onIssueClick}
                           auditIssueById={auditIssueById}
-                          showDebugRefs={showDebugRefs}
+                          geoExplainDebugMode={geoExplainDebugMode}
                           hideCategoryBadge
                           axisFriendlyLabel={focusByAxis[g.axis as GeoAxis] ?? GEO_AXIS_LABEL[g.axis] ?? g.axis}
                         />
@@ -1479,8 +1593,13 @@ export default function AuditPanel({
                       )}
                     </div>
                     <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55 }}>{opp.rationale}</div>
-                    {showDebugRefs && opp.sourceRefs && Object.keys(opp.sourceRefs).length > 0 && (
-                      <pre style={{ margin: "8px 0 0", fontSize: 10, color: "#6d8099", fontFamily: "var(--font-mono)" }}>{JSON.stringify(opp.sourceRefs, null, 2)}</pre>
+                    {geoExplainDebugMode && (
+                      <>
+                        <div style={{ fontSize: 11, color: "#6d8099", fontFamily: "var(--font-mono)", fontWeight: 600, marginTop: 8 }}>Opportunity (debug JSON)</div>
+                        <pre style={{ margin: "4px 0 0", fontSize: 10, color: "#6d8099", fontFamily: "var(--font-mono)", overflow: "auto", maxHeight: 240 }}>
+                          {JSON.stringify(opp, null, 2)}
+                        </pre>
+                      </>
                     )}
                   </div>
                 );

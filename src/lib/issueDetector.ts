@@ -11,6 +11,7 @@ import {
   resolvePrimaryGeoIssues,
   resolvePrimaryGeoPassed,
 } from './geoExplain';
+import { dedupeGeoIssuesById } from './geoExplain/issueEngine';
 import type {
   AnalysisResult,
   AuditIssue,
@@ -21,7 +22,14 @@ import type {
   IframePositionData,
   IssueRule,
   PassedCheck,
+  PlatformConstraint,
 } from './analysisTypes';
+import {
+  filterNaverBlogGeoPassed,
+  filterNaverBlogOpportunities,
+  partitionNaverBlogGeoIssues,
+} from './naverBlogAuditConstraints';
+import { isHostedBlogPlatform } from './geoExplain/platformIssueWording';
 
 export interface AuditResults {
   issues: AuditIssue[];
@@ -29,6 +37,65 @@ export interface AuditResults {
   geoIssues: GeoIssue[];
   geoPassedItems: GeoPassedItem[];
   opportunities: GeoOpportunity[];
+  /** Naver Blog: technical SEO items moved out of actionable issues */
+  platformConstraints?: PlatformConstraint[];
+  /** Editorial + naver_blog: injected `blog_low_info_density` fallback */
+  weakBlogFallbackApplied?: boolean;
+}
+
+/** Synthetic audit rows (no row in monthly issueRules). */
+const SYNTHETIC_ISSUE_AUDIT_LAYOUT: Record<string, { targetSelector: string; targetIndex: number }> = {
+  blog_low_info_density: { targetSelector: 'article', targetIndex: 0 },
+};
+
+const BLOG_LOW_INFO_OVERLAP_ISSUE_IDS = new Set([
+  'quotable',
+  'content_short',
+  'first_para',
+  'content_len',
+  'questions',
+  'blog_low_info_density',
+]);
+
+function hasOverlappingInformationalIssue(issues: GeoIssue[]): boolean {
+  for (const g of issues) {
+    if (BLOG_LOW_INFO_OVERLAP_ISSUE_IDS.has(g.id)) return true;
+    if (
+      g.id.startsWith('axis_weak_paragraph') ||
+      g.id.startsWith('axis_weak_answerability') ||
+      g.id.startsWith('axis_weak_citation')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldInjectNaverBlogLowInfoIssue(result: AnalysisResult, issues: GeoIssue[]): boolean {
+  if (result.platform !== 'naver_blog' || result.pageType !== 'editorial') return false;
+  if (hasOverlappingInformationalIssue(issues)) return false;
+  const s = result.scores;
+  const cq = result.contentQuality;
+  const ebs = cq.editorialBlogSignals;
+  const primaryWeak =
+    s.paragraphScore < 60 && s.answerabilityScore < 60 && cq.quotableSentenceCount < 12;
+  const secondaryWeak =
+    (ebs?.decisiveNonNumericCount ?? 0) < 4 && (ebs?.pageQuestionCount ?? 0) < 5;
+  return primaryWeak || secondaryWeak;
+}
+
+function buildBlogLowInfoDensityGeoIssue(): GeoIssue {
+  return {
+    id: 'blog_low_info_density',
+    category: 'weak_signals',
+    axis: 'answerability',
+    severity: 'high',
+    label: '정보 밀도 부족',
+    description:
+      '경험·감상 위주의 문장이 많고, 검색자가 바로 활용할 수 있는 기준·비교·근거 정보가 부족합니다.',
+    fix: '측정 가능한 기준, 비교 포인트, 근거·수치, 독자 상황별 선택 가이드를 본문에 보강하세요.',
+    sourceRefs: { ruleId: 'blog_low_info_density' },
+  };
 }
 
 export function generateFixExamples(
@@ -46,6 +113,8 @@ export function generateFixExamples(
     }
   })();
 
+  const hosted = isHostedBlogPlatform(result.platform);
+
   switch (ruleId) {
     case 'title':
       return [
@@ -56,10 +125,46 @@ export function generateFixExamples(
       ];
 
     case 'desc':
+      if (hosted) {
+        return [
+          {
+            language: 'markdown',
+            code: [
+              `## 도입 요약 (본문 상단)`,
+              ``,
+              `**핵심:** ${kwStr}에 대해 독자가 먼저 알아야 할 결론·범위·전제를 2~4문장으로 적습니다.`,
+              ``,
+              `아래 목차가 이어진다는 안내를 한 줄 넣어 스캔하기 쉽게 합니다.`,
+            ].join('\n'),
+          },
+        ];
+      }
       return [
         {
           language: 'html',
           code: `<meta name="description" content="${topKw[0] || '서비스'}에 대한 자주 묻는 질문과 답변을 확인하세요. ${kwStr} 관련 핵심 정보를 한눈에 정리했습니다." />`,
+        },
+      ];
+
+    case 'desc_og_only':
+      if (hosted) {
+        return [
+          {
+            language: 'markdown',
+            code: [
+              `## 제목·첫 문단 (og 외 본문 신호 강화)`,
+              ``,
+              `- **제목:** 검색 질문에 가깝게 범위·대상을 드러내기`,
+              `- **첫 단락:** ${kwStr} 관련 핵심 결론·요약을 2~4문장으로`,
+              `- **상단:** 숫자·조건·대상 독자 등 키 정보를 불릿으로`,
+            ].join('\n'),
+          },
+        ];
+      }
+      return [
+        {
+          language: 'html',
+          code: `<meta name="description" content="${(result.meta.ogDescription || '').slice(0, 155) || `${kwStr}에 대한 핵심 요약`}" />`,
         },
       ];
 
@@ -111,6 +216,20 @@ export function generateFixExamples(
     }
 
     case 'og':
+      if (hosted) {
+        return [
+          {
+            language: 'markdown',
+            code: [
+              `## 공유·미리보기에 쓰이는 정보`,
+              ``,
+              `- **제목:** 검색 질문에 가깝게 키워드와 범위를 드러내기`,
+              `- **첫 단락:** 요약·결론이 바로 보이게 작성 (플랫폼 편집기 상단 본문)`,
+              `- **대표 이미지:** 주제가 한눈에 드러나는 이미지 선택`,
+            ].join('\n'),
+          },
+        ];
+      }
       return [
         {
           language: 'html',
@@ -258,6 +377,28 @@ export function generateFixExamples(
       ];
 
     case 'no_schema':
+      if (hosted) {
+        return [
+          {
+            language: 'markdown',
+            code: [
+              `## 본문에서 정보 구조화하기`,
+              ``,
+              `### ${topKw[0] || '주제'} 한눈에 보기`,
+              `- 항목 A: 요약`,
+              `- 항목 B: 요약`,
+              ``,
+              `### 자주 묻는 질문`,
+              `**Q.** ${topKw[0] || '주제'}는 언제 필요한가요?`,
+              `**A.** 짧게 답하고, 아래 표에서 비교합니다.`,
+              ``,
+              `| 구분 | 옵션 1 | 옵션 2 |`,
+              `| --- | --- | --- |`,
+              `| 특징 | | |`,
+            ].join('\n'),
+          },
+        ];
+      }
       return [
         {
           language: 'html',
@@ -305,6 +446,20 @@ export function generateFixExamples(
         },
       ];
 
+    case 'blog_low_info_density':
+      return [
+        {
+          language: 'markdown',
+          code: [
+            `## 정보 밀도 올리기`,
+            ``,
+            `- **비교:** A와 B의 차이를 2~3가지 기준(가격·내구성·사용 환경 등)으로 표나 목록으로 정리`,
+            `- **근거:** 가능한 한 수치·범위·조건(예: "주 3회 이상 사용 시")을 문장에 포함`,
+            `- **선택 가이드:** "이런 분에게 맞음 / 덜 맞음"을 구체적 조건과 함께 작성`,
+          ].join('\n'),
+        },
+      ];
+
     case 'author':
       return [
         {
@@ -322,6 +477,19 @@ export function generateFixExamples(
       ];
 
     case 'pub_date':
+      if (hosted) {
+        return [
+          {
+            language: 'markdown',
+            code: [
+              `## 발행·갱신 정보`,
+              ``,
+              `- 글 상단 또는 하단에 **발행일**(및 필요 시 **수정일**)이 독자에게 보이는지 확인합니다.`,
+              `- 플랫폼에서 제공하는 발행일·공개 범위 설정을 활용합니다.`,
+            ].join('\n'),
+          },
+        ];
+      }
       return [
         {
           language: 'html',
@@ -356,14 +524,15 @@ function geoIssuesToAuditIssues(
   let num = 1;
   return geoIssues.map((g) => {
     const rule = rulesSource.find((r) => r.id === g.id);
+    const synthetic = SYNTHETIC_ISSUE_AUDIT_LAYOUT[g.id];
     return {
       id: g.id,
       number: num++,
       label: g.label,
       description: g.description,
       priority: g.severity,
-      targetSelector: rule?.targetSelector ?? '_top',
-      targetIndex: rule?.targetIndex ?? 0,
+      targetSelector: synthetic?.targetSelector ?? rule?.targetSelector ?? '_top',
+      targetIndex: synthetic?.targetIndex ?? rule?.targetIndex ?? 0,
       fixExamples: generateFixExamples(g.id, result),
     };
   });
@@ -385,7 +554,8 @@ export async function deriveAuditIssues(
   let ytAllowResolved: { ids: string[]; source: 'config' | 'default' };
   let issueRulesToUseLen: number;
 
-  if (result.auditIssues !== undefined) {
+  // Video pipeline only: web/editorial results also set `auditIssues` from rule engines — must not use YouTube mappers.
+  if (result.pageType === 'video') {
     geoIssues = runYoutubeIssueEngine(result);
     geoPassed = await runYoutubePassedEngine(result);
     skipTextOnlyRules = false;
@@ -405,10 +575,34 @@ export async function deriveAuditIssues(
 
   const { primary: finalGeoPassed, source: geoPassedSource } = resolvePrimaryGeoPassed(result, geoPassed);
 
-  const opportunities = runOpportunityEngine(result, finalGeoIssues, config);
+  let workingGeoIssues = finalGeoIssues;
+  let workingGeoPassed = finalGeoPassed;
+  let platformConstraints: PlatformConstraint[] | undefined;
 
-  const issues = geoIssuesToAuditIssues(finalGeoIssues, result, rulesSource);
-  const passedChecks = geoPassedToPassedChecks(finalGeoPassed);
+  if (result.platform === 'naver_blog') {
+    const partitioned = partitionNaverBlogGeoIssues(finalGeoIssues);
+    workingGeoIssues = partitioned.actionable;
+    platformConstraints =
+      partitioned.constraints.length > 0 ? partitioned.constraints : undefined;
+    workingGeoPassed = filterNaverBlogGeoPassed(finalGeoPassed);
+  }
+
+  let weakBlogFallbackApplied = false;
+  if (shouldInjectNaverBlogLowInfoIssue(result, workingGeoIssues)) {
+    workingGeoIssues = dedupeGeoIssuesById([
+      ...workingGeoIssues,
+      buildBlogLowInfoDensityGeoIssue(),
+    ]);
+    weakBlogFallbackApplied = true;
+  }
+
+  let opportunities = runOpportunityEngine(result, workingGeoIssues, config);
+  if (result.platform === 'naver_blog') {
+    opportunities = filterNaverBlogOpportunities(opportunities);
+  }
+
+  const issues = geoIssuesToAuditIssues(workingGeoIssues, result, rulesSource);
+  const passedChecks = geoPassedToPassedChecks(workingGeoPassed);
 
   const scrollHeight = positionData?.scrollHeight ?? 3000;
 
@@ -459,8 +653,10 @@ export async function deriveAuditIssues(
   return {
     issues: finalIssues,
     passedChecks,
-    geoIssues: finalGeoIssues,
-    geoPassedItems: finalGeoPassed,
+    geoIssues: workingGeoIssues,
+    geoPassedItems: workingGeoPassed,
     opportunities,
+    platformConstraints,
+    ...(weakBlogFallbackApplied ? { weakBlogFallbackApplied: true } : {}),
   };
 }

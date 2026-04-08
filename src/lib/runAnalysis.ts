@@ -1,5 +1,6 @@
 import { fetchHtml, extractMetaAndContent } from './htmlAnalyzer';
-import { normalizeUrl } from './normalizeUrl';
+import { fetchHtmlWithNaverFallback } from './fetchHtmlForAnalysis';
+import { normalizeUrl, sanitizeIncomingAnalyzeUrl } from './normalizeUrl';
 import { runGeminiVideoAnalysis, buildYouTubeAnalysisResult, VideoAnalysisQuotaSkipError, type GeminiVideoAnalysisResult } from './geminiVideoAnalysis';
 import {
   estimateVideoCitationScore,
@@ -14,7 +15,7 @@ import type { CoverageMatchInput } from './coverageSurfaces';
 import { filterQuestionsByPageRelevance, type FilterQuestionsRunMeta } from './questionFilter';
 import { getProfileForPageType, loadActiveScoringConfig } from './scoringConfigLoader';
 import { evaluateCheck } from './checkEvaluator';
-import { analyzeParagraphs, paragraphStatsToScore } from './paragraphAnalyzer';
+import { analyzeParagraphs, computeBlogRelaxedParagraphScore, paragraphStatsToScore } from './paragraphAnalyzer';
 import { extractChunks, evaluateCitations, citationsToScore } from './citationEvaluator';
 import { deriveAuditIssues } from './issueDetector';
 import { buildAxisScores, logGeoExplainDebug } from './geoExplain';
@@ -26,18 +27,32 @@ import { fetchYouTubeMetadata, fetchYouTubeOEmbed, isYouTubeUrl, youtubeMetadata
 import {
   computeQuestionMatchScore,
   computeSearchQuestionCoverage,
+  softenQuestionMatchForEditorialBlog,
 } from './questionCoverage';
 import type {
   AnalysisResult,
+  AnalysisMeta,
   ChunkCitation,
   GeoScores,
   PageFeatures,
-  AnalysisMeta,
   SearchQuestion,
   ScoringRule,
   PageType,
   LlmCallStatus,
+  AnswerabilityDebug,
 } from './analysisTypes';
+import { buildAnswerabilityDebug } from './answerabilityDebug';
+import {
+  DEFAULT_EDITORIAL_ANSWERABILITY_RULES,
+  usesDataHeavyAnswerability,
+} from './editorialBlogAnswerability';
+import {
+  countEditorialBlogRelaxedQualityBuckets,
+  countEditorialStrongAnswerSignals,
+  EDITORIAL_ANSWERABILITY_QUALITY_CAP_PERCENT,
+  shouldCapEditorialBlogRelaxedGate,
+  shouldCapEditorialAnswerabilityForWeakQuality,
+} from './editorialAnswerabilityQualityGate';
 import {
   blendMonthlyAndFixed,
   buildBlendDebug,
@@ -56,6 +71,7 @@ import {
   type FinalBlendContext,
 } from './geoScoreBlend';
 import { detectPageType, computeEditorialComparisonScore } from './pageTypeDetection';
+import { classifyDataPageAndHosting } from './dataPageClassification';
 import {
   computeExtractionMetrics,
   shouldAttemptHeadlessFetch,
@@ -63,6 +79,7 @@ import {
 } from './articleExtraction';
 import { fetchHtmlViaHeadless } from './headlessHtmlFetch';
 import { runWithGeminiTrace } from './geminiTraceContext';
+import { computeQualityAdjustment } from './qualityAdjuster';
 
 /** FAQ 성격 페이지 감지: JSON-LD FAQPage 또는 질문형 헤딩 30% 이상 */
 function detectFaqLikePage(params: {
@@ -102,11 +119,22 @@ export interface RunAnalysisOptions {
 }
 
 export async function runAnalysis(url: string, options?: RunAnalysisOptions): Promise<AnalysisResult> {
-  const normalizedUrl = normalizeUrl(url);
-  return runWithGeminiTrace({ normalizedUrl }, () => runAnalysisImpl(url, options));
+  const cleaned = sanitizeIncomingAnalyzeUrl(url);
+  const normalizedUrl = normalizeUrl(cleaned);
+  const inputUrlRaw = typeof cleaned === 'string' ? cleaned : String(cleaned ?? '');
+  const inputUrl = inputUrlRaw.trim() || normalizedUrl;
+  return runWithGeminiTrace({ normalizedUrl }, () =>
+    runAnalysisImpl({ inputUrl, normalizedUrl }, options)
+  );
 }
 
-async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promise<AnalysisResult> {
+async function runAnalysisImpl(
+  ctx: { inputUrl: string; normalizedUrl: string },
+  options?: RunAnalysisOptions
+): Promise<AnalysisResult> {
+  const { inputUrl, normalizedUrl } = ctx;
+  /** Canonical URL for scoring, result fields, cache keys (Naver → m.blog). Fetch may use a fallback target. */
+  const url = normalizedUrl;
   try {
     const appOrigin = options?.appOrigin ?? process.env.GEO_ANALYZER_BASE_URL;
     const llmStatuses: LlmCallStatus[] = [];
@@ -123,7 +151,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         meta = youtubeMetadataToAnalysisMeta(ytMeta);
       } else {
         const html = await fetchHtml(url, appOrigin);
-        const extracted = extractMetaAndContent(html);
+        const extracted = extractMetaAndContent(html, { pageUrl: normalizedUrl });
         meta = extracted.meta;
       }
 
@@ -197,7 +225,12 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
           rawSearchQuestions,
           meta.title ?? null,
           enhancedContentText.slice(0, 2000),
-          { pageType: 'video', primaryPhrase: topic.primaryPhrase }
+          {
+            pageType: 'video',
+            primaryPhrase: topic.primaryPhrase,
+            essentialTokens: topic.essentialTokens,
+            isEnglishPage: topic.isEnglishPage,
+          }
         );
         let searchEvidence = fqVideo.questions;
         if (!searchEvidence.length) searchEvidence = rawSearchQuestions.slice(0, 10);
@@ -246,6 +279,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
           effectiveContentText: enhancedContentText,
           searchQuestions,
           coverageMatchInput: videoCoverageInput,
+          originalInputUrl: inputUrl,
         });
     
         console.log('[VIDEO CHECK]', {
@@ -260,7 +294,8 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
     
         coreResult.axisScores = buildAxisScores(coreResult);
         const auditVideo = await deriveAuditIssues(coreResult);
-        const { issues, passedChecks, geoIssues, geoPassedItems, opportunities } = auditVideo;
+        const { issues, passedChecks, geoIssues, geoPassedItems, opportunities, platformConstraints } =
+          auditVideo;
         const geoExplainVideo = {
           axisScores: coreResult.axisScores,
           issues: geoIssues,
@@ -295,6 +330,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
           canonicalSearchQuestions: searchQuestions,
           recommendations,
           passedChecks,
+          platformConstraints,
           geoExplain: geoExplainVideo,
           llmStatuses: llmStatuses.length > 0 ? llmStatuses : undefined,
         };
@@ -312,7 +348,12 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         rawSearchQuestions,
         meta.title ?? null,
         effectiveContent.slice(0, 2000),
-        { pageType: 'video', primaryPhrase: topicFb.primaryPhrase }
+        {
+          pageType: 'video',
+          primaryPhrase: topicFb.primaryPhrase,
+          essentialTokens: topicFb.essentialTokens,
+          isEnglishPage: topicFb.isEnglishPage,
+        }
       );
       let searchEvidence = fqVideoFb.questions;
       if (!searchEvidence.length) searchEvidence = rawSearchQuestions.slice(0, 10);
@@ -334,7 +375,9 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       const questionCoverageScore = searchQuestions.length > 0
         ? Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100)
         : 0;
-      const questionMatchScore = computeQuestionMatchScore(searchQuestions, effectiveContent);
+      const questionMatchScore = computeQuestionMatchScore(searchQuestions, effectiveContent, {
+        topicTokens: topicFb.essentialTokens,
+      });
       const hasSearchExposure = searchQuestions.some((q) => {
         if (!q.url) return false;
         try {
@@ -367,6 +410,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         searchQuestions,
         coverageMatchInput: videoCoverageInputFb,
         fallbackCitationScore,
+        originalInputUrl: inputUrl,
       });
       coreResult.axisScores = buildAxisScores(coreResult);
       const auditVideoFb = await deriveAuditIssues(coreResult);
@@ -376,6 +420,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         geoIssues: geoIssuesFb,
         geoPassedItems: geoPassedFb,
         opportunities: oppsFb,
+        platformConstraints: platformConstraintsFb,
       } = auditVideoFb;
       const geoExplainVideoFb = {
         axisScores: coreResult.axisScores,
@@ -411,6 +456,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         canonicalSearchQuestions: searchQuestions,
         recommendations,
         passedChecks,
+        platformConstraints: platformConstraintsFb,
         geoExplain: geoExplainVideoFb,
         llmStatuses: llmStatuses.length > 0 ? llmStatuses : undefined,
       };
@@ -424,12 +470,27 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       }
     })();
 
-    let html = await fetchHtml(url, appOrigin);
+    let html: string;
+    let serverFetchTargetUrl: string;
+    let naverFetchUsedPcFallback = false;
+    let naverMobileFetchUsedHeadless = false;
     let extractionSource: 'server' | 'headless' = 'server';
+    {
+      const fetched = await fetchHtmlWithNaverFallback(inputUrl, normalizedUrl, appOrigin);
+      html = fetched.html;
+      serverFetchTargetUrl = fetched.usedFetchUrl;
+      naverFetchUsedPcFallback = fetched.naverUsedPcFallback;
+      naverMobileFetchUsedHeadless = fetched.naverMobileUsedHeadless;
+    }
+    const analysisFetchWarning: string | null = naverFetchUsedPcFallback
+      ? '모바일(m.blog)에서 본문을 가져오지 못해 PC/PostView URL로 분석했습니다. m.blog URL로 직접 열 때와 점수·지표가 달라질 수 있습니다.'
+      : null;
     const preMetrics = computeExtractionMetrics(html);
-    if (shouldAttemptHeadlessFetch(analysisHostFromUrl, preMetrics)) {
+    const skipDuplicateNaverHeadless =
+      naverMobileFetchUsedHeadless && /(^|\.)m\.blog\.naver\.com$/i.test(analysisHostFromUrl);
+    if (!skipDuplicateNaverHeadless && shouldAttemptHeadlessFetch(analysisHostFromUrl, preMetrics)) {
       try {
-        const htmlH = await fetchHtmlViaHeadless(url);
+        const htmlH = await fetchHtmlViaHeadless(serverFetchTargetUrl);
         const postMetrics = computeExtractionMetrics(htmlH);
         if (headlessImprovesExtraction(preMetrics, postMetrics)) {
           html = htmlH;
@@ -437,7 +498,9 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
         }
         if (process.env.GEO_EXTRACTION_DEBUG === '1') {
           console.log('[GEO_EXTRACTION]', {
-            url,
+            normalized_url: normalizedUrl,
+            fetch_target_url: serverFetchTargetUrl,
+            url: normalizedUrl,
             host: analysisHostFromUrl,
             server: preMetrics,
             headless: postMetrics,
@@ -449,7 +512,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       }
     }
 
-    const extracted = extractMetaAndContent(html);
+    const extracted = extractMetaAndContent(html, { pageUrl: normalizedUrl });
     const config = activeScoringConfig;
     const {
       meta, headings, h1Count, contentText, pageQuestions,
@@ -464,12 +527,13 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
     });
     const isCommerce = pageType === 'commerce';
     const isDanawa = url.includes('danawa.com');
-    const dataDensity =
-      (contentQuality.tableCount > 0 ? 1 : 0) * 0.3 +
-      (contentQuality.listCount >= 1 ? 1 : 0) * 0.25 +
-      ((contentQuality.productSpecBlockCount ?? 0) >= 1 ? 1 : 0) * 0.25 +
-      (contentQuality.hasPriceInfo ? 1 : 0) * 0.2;
-    const isDataPage = isDanawa || hasProductSchema || dataDensity >= 0.3;
+    const { isDataPage, platform } = classifyDataPageAndHosting({
+      url,
+      normalizedUrl,
+      pageType,
+      contentQuality,
+      hasProductSchemaBroad: hasProductSchema,
+    });
     const isYouTube = isYouTubeUrl(url);
     const contentForAnalysis = isYouTube
       ? [meta.title, meta.description].filter(Boolean).join(' ')
@@ -481,6 +545,13 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       contentForAnalysis
     );
 
+    const primaryTopicForCanonical = derivePrimaryTopic(
+      { title: meta.title, ogTitle: meta.ogTitle },
+      url,
+      seedKeywords,
+      pageType
+    );
+
     let searchEvidence = await fetchSearchQuestions(seedKeywords, {
       meta: { title: meta.title, ogTitle: meta.ogTitle },
       url,
@@ -488,15 +559,15 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
     const fqEditorial = await filterQuestionsByPageRelevance(
       searchEvidence,
       meta.title,
-      contentForAnalysis.slice(0, 1500)
+      contentForAnalysis.slice(0, 2000),
+      {
+        pageType: 'editorial',
+        primaryPhrase: primaryTopicForCanonical.primaryPhrase,
+        essentialTokens: primaryTopicForCanonical.essentialTokens,
+        isEnglishPage: primaryTopicForCanonical.isEnglishPage,
+      }
     );
     searchEvidence = fqEditorial.questions;
-    const primaryTopicForCanonical = derivePrimaryTopic(
-      { title: meta.title, ogTitle: meta.ogTitle },
-      url,
-      seedKeywords,
-      pageType
-    );
     const searchQuestions = buildCanonicalSearchQuestions({
       evidence: searchEvidence,
       seedKeywords,
@@ -553,19 +624,46 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
 
     const isFaqLikePage = detectFaqLikePage({ hasFaqSchema, headings });
 
+    const editorialSubtypeForScoring =
+      pageType === 'editorial'
+        ? detectEditorialSubtype({
+            url,
+            meta: meta as AnalysisMeta,
+            headings,
+            trustSignals,
+            jsonLdTypesFound: contentQuality.jsonLdProductTypesFound ?? [],
+          })
+        : null;
+
     // Ensure analyzeParagraphs and evaluateCitations never run in parallel.
     // Use sequential execution and limit paragraph analysis to top 3.
     const paragraphStats = analyzeParagraphs(html, headings, searchQuestions, 3);
     let paragraphScore = paragraphStatsToScore(paragraphStats, { isFaqLikePage });
+    if (pageType === 'editorial' && editorialSubtypeForScoring?.editorialSubtype === 'blog') {
+      const blogParagraphScore = computeBlogRelaxedParagraphScore(contentQuality, contentForAnalysis);
+      paragraphScore = Math.max(paragraphScore, blogParagraphScore);
+    }
 
     const searchQuestionCovered = computeSearchQuestionCoverage(searchQuestions, coverageMatchInput);
     const questionCoverageScore =
       searchQuestions.length > 0
         ? Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100)
         : 0;
-    let questionMatchScore = computeQuestionMatchScore(searchQuestions, contentForAnalysis);
+    let questionMatchScore = computeQuestionMatchScore(searchQuestions, contentForAnalysis, {
+      topicTokens: primaryTopicForCanonical.essentialTokens,
+    });
     if (questionMatchScore === 0 && (paragraphStats.communityFitScore ?? 0) > 0) {
       questionMatchScore = Math.min(100, paragraphStats.communityFitScore ?? 0);
+    }
+    if (
+      pageType === 'editorial' &&
+      editorialSubtypeForScoring?.editorialSubtype === 'blog'
+    ) {
+      questionMatchScore = softenQuestionMatchForEditorialBlog(
+        questionMatchScore,
+        questionCoverageScore
+      );
+      questionMatchScore = Math.min(75, questionMatchScore);
     }
 
     const reviewLikePage = (() => {
@@ -596,6 +694,15 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       url
     );
 
+    const hasMetaDescription = !!(meta.description?.trim());
+    const hasOgDescription = !!(meta.ogDescription?.trim());
+    const descriptionLen = meta.description?.trim().length ?? 0;
+    const effectiveDescriptionLength = hasMetaDescription
+      ? descriptionLen
+      : hasOgDescription
+        ? meta.ogDescription!.trim().length
+        : 0;
+
     const features: PageFeatures = {
       meta,
       headings,
@@ -603,11 +710,15 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       pageQuestions,
       seedKeywords,
       questionCoverage: questionCoverageScore,
+      questionMatchScore,
       structureScore: 0,
       hasFaqSchema,
       hasStructuredData,
       hasProductSchema,
-      descriptionLength: meta.description?.trim().length ?? 0,
+      descriptionLength: descriptionLen,
+      hasMetaDescription,
+      hasOgDescription,
+      effectiveDescriptionLength,
       contentQuality,
       trustSignals,
     };
@@ -617,31 +728,42 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       config.structureBaseScore,
       isDataPage
     );
-    const answerabilityResult = calculateRuleScore(
-      features,
-      config.answerabilityRules ?? [],
-      0,
-      pageType
-    );
+    const answerabilityRulesActive = usesDataHeavyAnswerability(pageType, isDataPage)
+      ? (config.answerabilityRules ?? [])
+      : Array.isArray(config.answerabilityRulesEditorial) && config.answerabilityRulesEditorial.length > 0
+        ? config.answerabilityRulesEditorial
+        : DEFAULT_EDITORIAL_ANSWERABILITY_RULES;
+
+    const answerabilityResult = calculateRuleScore(features, answerabilityRulesActive, 0, pageType);
     let answerabilityScore =
       answerabilityResult.maxScore > 0
         ? Math.round((answerabilityResult.score / answerabilityResult.maxScore) * 100)
         : 0;
+    let answerabilityDataPageFloorApplied = false;
     if (isDataPage && answerabilityScore < 65) {
+      answerabilityDataPageFloorApplied = true;
       answerabilityScore = 65;
     }
-    const trustResult = calculateRuleScore(features, config.trustRules ?? [], 0, pageType);
+    const trustSignalsForScoring =
+      platform === 'naver_blog'
+        ? { ...trustSignals, hasSearchExposure: false }
+        : trustSignals;
+    const featuresForTrust: PageFeatures = { ...features, trustSignals: trustSignalsForScoring };
+    const trustResult = calculateRuleScore(featuresForTrust, config.trustRules ?? [], 0, pageType);
     let trustScore =
       trustResult.maxScore > 0
         ? Math.round((trustResult.score / trustResult.maxScore) * 100)
         : 0;
     if (trustSignals.hasDomainAuthority || trustSignals.hasActualAiCitation) {
       trustScore = Math.min(100, trustScore + 20);
-    } else if (trustSignals.hasSearchExposure) {
+    } else if (trustSignals.hasSearchExposure && platform !== 'naver_blog') {
       trustScore = Math.min(100, trustScore + 5);
     }
     if (isYouTube) {
       trustScore = Math.min(100, trustScore + 15);
+    }
+    if (platform === 'naver_blog' && pageType === 'editorial') {
+      trustScore = Math.min(72, trustScore);
     }
 
     let citationFallbackMeta: EditorialCitationFallbackResult | null = null;
@@ -745,6 +867,7 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       citationScore = Math.min(100, citationScore);
     }
 
+    let answerabilityThinDomBoostApplied = false;
     // Thin DOM / failed extraction: soften paragraph & answerability collapse using meta signals
     if (extractionIncomplete && pageType === 'editorial' && !isDataPage) {
       const syn = [meta.title, meta.description, meta.ogDescription].filter(Boolean).join('\n');
@@ -753,10 +876,42 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
           paragraphScore = Math.min(58, 32 + Math.min(24, Math.floor(syn.length / 130)));
         }
         if (answerabilityScore < 45) {
+          const prevAns = answerabilityScore;
           answerabilityScore = Math.max(
             answerabilityScore,
             Math.min(55, 30 + Math.min(25, Math.floor(headings.length * 2.5)))
           );
+          if (answerabilityScore > prevAns) answerabilityThinDomBoostApplied = true;
+        }
+      }
+    }
+
+    let answerabilityEditorialQualityGateApplied = false;
+    let editorialAnswerabilityQualityDimensions: number | undefined;
+    if (!usesDataHeavyAnswerability(pageType, isDataPage)) {
+      const useBlogRelaxedGate =
+        pageType === 'editorial' && editorialSubtypeForScoring?.editorialSubtype === 'blog';
+
+      if (useBlogRelaxedGate) {
+        editorialAnswerabilityQualityDimensions = countEditorialBlogRelaxedQualityBuckets(
+          features,
+          answerabilityRulesActive,
+          structureScore
+        );
+        if (shouldCapEditorialBlogRelaxedGate(editorialAnswerabilityQualityDimensions)) {
+          const before = answerabilityScore;
+          answerabilityScore = Math.min(answerabilityScore, EDITORIAL_ANSWERABILITY_QUALITY_CAP_PERCENT);
+          if (answerabilityScore < before) answerabilityEditorialQualityGateApplied = true;
+        }
+      } else {
+        editorialAnswerabilityQualityDimensions = countEditorialStrongAnswerSignals(
+          features,
+          answerabilityRulesActive
+        );
+        if (shouldCapEditorialAnswerabilityForWeakQuality(editorialAnswerabilityQualityDimensions)) {
+          const before = answerabilityScore;
+          answerabilityScore = Math.min(answerabilityScore, EDITORIAL_ANSWERABILITY_QUALITY_CAP_PERCENT);
+          if (answerabilityScore < before) answerabilityEditorialQualityGateApplied = true;
         }
       }
     }
@@ -845,9 +1000,67 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
     }
     const finalScoreAfterCaps = finalScore;
 
+    let qualityAdjustmentDebug: GeoScores['qualityAdjustmentDebug'];
+    if (pageType === 'editorial') {
+      const qa = computeQualityAdjustment({
+        contentLength: contentQuality.contentLength,
+        quotableSentenceCount: contentQuality.quotableSentenceCount,
+        listCount: contentQuality.listCount,
+        contentText: contentForAnalysis,
+        answerabilityScore,
+        repetitiveRatio: paragraphStats.duplicateRatio ?? 0,
+        platform,
+      });
+      finalScore = Math.max(0, Math.min(100, finalScore + qa.adjustment));
+      qualityAdjustmentDebug = {
+        penalty: qa.penalty,
+        boost: qa.boost,
+        finalAdjustment: qa.finalAdjustment,
+      };
+    }
+
     let commerceMonthlyForDebug: number | undefined;
     let commerceFixedForDebug: number | undefined;
     let commerceBlendedForDebug: number | undefined;
+
+    const answerabilityDebug: AnswerabilityDebug = {
+      ...buildAnswerabilityDebug(
+        features,
+        answerabilityRulesActive,
+        pageType,
+        contentForAnalysis
+      ),
+      finalPercent: answerabilityScore,
+      dataPageFloorApplied: answerabilityDataPageFloorApplied,
+      editorialThinDomBoostApplied: answerabilityThinDomBoostApplied,
+      ...(editorialAnswerabilityQualityDimensions !== undefined
+        ? {
+            editorialQualityDimensionsMet: editorialAnswerabilityQualityDimensions,
+            editorialQualityGateApplied: answerabilityEditorialQualityGateApplied,
+          }
+        : {}),
+    };
+
+    if (process.env.GEO_ANSWERABILITY_DEBUG === '1') {
+      console.log(
+        '[ANSWERABILITY_DEBUG]',
+        JSON.stringify(
+          {
+            url,
+            ruleEnginePercent: answerabilityDebug.ruleEnginePercent,
+            finalPercent: answerabilityDebug.finalPercent,
+            dataPageFloorApplied: answerabilityDebug.dataPageFloorApplied,
+            editorialThinDomBoostApplied: answerabilityDebug.editorialThinDomBoostApplied,
+            editorialQualityDimensionsMet: answerabilityDebug.editorialQualityDimensionsMet,
+            editorialQualityGateApplied: answerabilityDebug.editorialQualityGateApplied,
+            signals: answerabilityDebug.signals,
+            failedRules: answerabilityDebug.ruleRows.filter((r) => !r.passed && !r.skippedForPageType),
+          },
+          null,
+          2
+        )
+      );
+    }
 
     const scores: GeoScores = {
       structureScore: effectiveStructureScore, answerabilityScore, trustScore,
@@ -857,6 +1070,8 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       finalScore,
       extractionIncomplete,
       extractionSource,
+      answerabilityDebug,
+      ...(qualityAdjustmentDebug ? { qualityAdjustmentDebug } : {}),
       citationFallbackDebug: citationFallbackMeta
         ? {
             applied: true,
@@ -984,23 +1199,15 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
 
     // pageType already determined earlier for scoring purposes
 
-    const editorialSubtypePayload =
-      pageType === 'editorial'
-        ? detectEditorialSubtype({
-            url,
-            meta: meta as AnalysisMeta,
-            headings,
-            trustSignals,
-            jsonLdTypesFound: contentQuality.jsonLdProductTypesFound ?? [],
-          })
-        : null;
+    const editorialSubtypePayload = editorialSubtypeForScoring;
 
     const coreResult: AnalysisResult = {
-      url,
-      normalizedUrl: normalizeUrl(url),
+      url: inputUrl,
+      normalizedUrl,
       analyzedAt: new Date().toISOString(),
       geoConfigVersion,
       pageType,
+      platform,
       ...(editorialSubtypePayload
         ? {
             editorialSubtype: editorialSubtypePayload.editorialSubtype,
@@ -1026,6 +1233,10 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       hasStructuredData,
       extractionIncomplete,
       extractionSource,
+      analysisFetchTargetUrl: serverFetchTargetUrl,
+      naverFetchUsedPcFallback: naverFetchUsedPcFallback || undefined,
+      analysisFetchWarning,
+      naverMobileFetchUsedHeadless: naverMobileFetchUsedHeadless || undefined,
     };
     // Lightweight review-like detection (only used for recommendations wording/UI).
     try {
@@ -1051,7 +1262,43 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       geoIssues,
       geoPassedItems,
       opportunities,
+      platformConstraints,
+      weakBlogFallbackApplied,
     } = auditWeb;
+
+    if (platform === 'naver_blog' && pageType === 'editorial') {
+      let weakPenaltyPts = 0;
+      if (weakBlogFallbackApplied) weakPenaltyPts += 6;
+      if (paragraphScore < 60 && answerabilityScore < 60) weakPenaltyPts += 4;
+      weakPenaltyPts = Math.min(10, weakPenaltyPts);
+      if (weakPenaltyPts > 0) {
+        scores.finalScore = Math.max(0, Math.min(100, scores.finalScore - weakPenaltyPts));
+      }
+      scores.finalWeakBlogPenaltyDebug = {
+        applied: weakPenaltyPts > 0,
+        amount: weakPenaltyPts,
+      };
+      if (scores.scoreBlendDebug) {
+        scores.scoreBlendDebug = { ...scores.scoreBlendDebug, finalScore: scores.finalScore };
+      }
+    }
+
+    if (pageType === 'editorial') {
+      let boostPts = 0;
+      if (paragraphScore >= 70 && answerabilityScore >= 70) boostPts = 10;
+      else if (paragraphScore >= 65 && answerabilityScore >= 65) boostPts = 8;
+      if (boostPts > 0) {
+        scores.finalScore = Math.max(0, Math.min(100, scores.finalScore + boostPts));
+        if (scores.scoreBlendDebug) {
+          scores.scoreBlendDebug = { ...scores.scoreBlendDebug, finalScore: scores.finalScore };
+        }
+      }
+      scores.editorialContentBoostDebug = {
+        applied: boostPts > 0,
+        amount: boostPts,
+      };
+    }
+
     const geoExplainWeb = {
       axisScores: coreResult.axisScores,
       issues: geoIssues,
@@ -1178,6 +1425,8 @@ async function runAnalysisImpl(url: string, options?: RunAnalysisOptions): Promi
       ...coreResult,
       auditIssues: issues,
       passedChecks,
+      platformConstraints,
+      ...(weakBlogFallbackApplied ? { weakBlogFallbackApplied: true } : {}),
       recommendations,
       geoExplain: geoExplainWeb,
       llmStatuses: llmStatuses.length > 0 ? llmStatuses : undefined,

@@ -29,23 +29,115 @@ function meaningfulTokens(s: string): string[] {
   return tokenizeForMatch(s, 2).filter((t) => t.length >= 3 && !STOP_MEANINGFUL.has(t));
 }
 
-/** Top 8 검색 질문과 본문 토큰 매칭률 — 0~100. 질문 토큰의 50% 이상 포함 시 hit */
+/** Contiguous Hangul runs (Korean has no spaces between words; whitespace split misses lemmas). */
+function hangulChunks(s: string): string[] {
+  const m = s.match(/[\p{Script=Hangul}]{2,}/gu) ?? [];
+  return m.map((x) => x.toLowerCase());
+}
+
+const HANGUL_CHUNK_STOP = new Set([
+  '있나요',
+  '되나요',
+  '인가요',
+  '무엇인가요',
+  '어떻게',
+  '무엇을',
+  '알려주는',
+  '알려주세요',
+]);
+
+/** Body may use noun stem while questions use noun+particle (e.g. 스위치 vs 스위치를). */
+function hangulChunkAppearsInBody(chunk: string, body: string): boolean {
+  const c = chunk.toLowerCase();
+  if (c.length < 2) return false;
+  if (body.includes(c)) return true;
+  for (let len = c.length - 1; len >= 2; len--) {
+    if (body.includes(c.slice(0, len))) return true;
+  }
+  return false;
+}
+
+/**
+ * True when body text plausibly addresses the question intent without requiring exact phrasing.
+ * Uses: whitespace/Latin tokens, meaningful tokens, Hangul substrings, and topic-token bridge.
+ */
+export function questionTextMatchesBody(
+  questionText: string,
+  contentText: string,
+  topicTokens: string[] = []
+): boolean {
+  const body = contentText.toLowerCase();
+  const q = questionText.trim();
+  if (!q || !body) return false;
+
+  const tokens = tokenizeForMatch(q, 2);
+  if (tokens.length > 0) {
+    const minTok = Math.max(1, Math.ceil(tokens.length * 0.4));
+    const tokHits = tokens.filter((t) => body.includes(t)).length;
+    if (tokHits >= minTok) return true;
+  }
+
+  const mq = meaningfulTokens(q);
+  if (mq.length > 0) {
+    const mh = mq.filter((t) => body.includes(t)).length;
+    if (mh / mq.length >= 0.4) return true;
+  }
+
+  const chunks = hangulChunks(q).filter((h) => !HANGUL_CHUNK_STOP.has(h) && h.length >= 2);
+  if (chunks.length > 0) {
+    const ch = chunks.filter((h) => hangulChunkAppearsInBody(h, body)).length;
+    const ratioNeed = chunks.length >= 6 ? 0.34 : 0.38;
+    if (ch / chunks.length >= ratioNeed) return true;
+  }
+
+  const topics = topicTokens.map((t) => t.toLowerCase()).filter((t) => t.length >= 2);
+  if (topics.length >= 2) {
+    const ql = q.toLowerCase();
+    const inQ = topics.filter((t) => ql.includes(t));
+    const inBody = topics.filter((t) => body.includes(t));
+    if (inBody.length >= 2 && inQ.length >= 1) return true;
+    if (inQ.length >= 2 && inQ.every((t) => body.includes(t))) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Editorial blog: SERP-shaped canonical questions often diverge from on-page phrasing even when
+ * questionCoverage already signals topical alignment. Blend in coverage so finalScore is not doubly
+ * penalized. Only applies when coverage is at least moderate (avoids lifting irrelevant pages).
+ */
+export function softenQuestionMatchForEditorialBlog(
+  questionMatchScore: number,
+  questionCoverageScore: number
+): number {
+  if (questionCoverageScore < 48) return questionMatchScore;
+  const blended = Math.round(0.72 * questionMatchScore + 0.28 * questionCoverageScore);
+  return Math.min(100, Math.max(questionMatchScore, blended));
+}
+
+export interface QuestionMatchScoreOptions {
+  /** Page essential topic tokens — enables topic bridge when question templates share wording with title */
+  topicTokens?: string[];
+}
+
+/**
+ * Top 8 canonical questions vs full body — 0~100.
+ * Uses multilingual / Hangul-aware alignment (`questionTextMatchesBody`), not whitespace-only token hit.
+ * Pass topicTokens when available so template questions that echo the page topic still score when body matches.
+ */
 export function computeQuestionMatchScore(
   questions: SearchQuestion[],
-  contentText: string
+  contentText: string,
+  options?: QuestionMatchScoreOptions
 ): number {
   if (!questions?.length || !contentText) return 0;
   const text = contentText.toLowerCase();
   const top = questions.slice(0, 8);
+  const topicTokens = options?.topicTokens ?? [];
   let hit = 0;
   for (const q of top) {
-    const tokens = q.text
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((t) => t.length >= 3);
-    const tokenHit =
-      tokens.length ? tokens.filter((t) => text.includes(t)).length / tokens.length : 0;
-    if (tokenHit >= 0.5) hit += 1;
+    if (questionTextMatchesBody(q.text, text, topicTokens)) hit += 1;
   }
   return Math.round((hit / top.length) * 100);
 }

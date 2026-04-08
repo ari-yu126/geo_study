@@ -48,6 +48,10 @@ function configJsonOrDefault(row: { config_json?: unknown } | null): GeoScoringC
 const SUPPORTED_CHECKS = [
   'title_exists',
   'desc_exists',
+  'meta_description_present',
+  'og_only_description_partial_credit',
+  'description_any_signal',
+  'meta_description_or_no_og',
   'desc_length_min',
   'desc_length_range',
   'og_title_exists',
@@ -457,6 +461,7 @@ function toLegacyConfig(v2: GeoScoringConfigV2): GeoScoringConfig {
     structureBaseScore: def.structureBaseScore,
     structureRules: def.structureRules,
     answerabilityRules: def.answerabilityRules,
+    answerabilityRulesEditorial: def.answerabilityRulesEditorial,
     trustRules: def.trustRules,
     weights: {
       structure: (w.structure ?? 0.15) + (w.answerability ?? 0.15) * 0.5,

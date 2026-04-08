@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { AnalysisResult } from "@/lib/analysisTypes";
+import { isHostedBlogPlatform } from "@/lib/geoExplain/platformIssueWording";
 
 interface SidebarProps {
   result: AnalysisResult;
@@ -29,8 +30,27 @@ function deriveImprovements(result: AnalysisResult) {
   if (!meta.title) {
     items.push({ id: "title", title: "Title 태그 누락", tip: "페이지 제목을 명확하게 설정하세요. GEO에서 title은 AI가 페이지 주제를 판단하는 핵심 신호입니다.", priority: "high", category: "메타 태그" });
   }
-  if (!meta.description) {
-    items.push({ id: "desc", title: "Meta Description 누락", tip: "150자 내외의 핵심 답변이 포함된 description을 작성하세요. AI는 description을 요약 단락으로 자주 인용합니다.", priority: "high", category: "메타 태그" });
+  const hasMeta = !!meta.description?.trim();
+  const hasOg = !!meta.ogDescription?.trim();
+  const hosted = isHostedBlogPlatform(result.platform);
+  if (!hasMeta && !hasOg) {
+    items.push({
+      id: "desc",
+      title: "Meta / OG 설명 누락",
+      tip: "표준 meta description과 og:description이 모두 없습니다. 최소 한 가지 요약 신호를 제공하세요.",
+      priority: "high",
+      category: "메타 태그",
+    });
+  } else if (!hasMeta && hasOg) {
+    items.push({
+      id: "desc_og_only",
+      title: "Meta description 없음 (OG만 있음)",
+      tip: hosted
+        ? "제목과 본문 첫 단락에 핵심 요약·키워드를 드러내세요. 이 플랫폼에서는 HTML meta를 직접 넣기 어려울 수 있습니다."
+        : "og:description은 일부 신호를 제공합니다. 가능하면 표준 `<meta name=\"description\">`을 추가해 일관성을 높이세요.",
+      priority: "medium",
+      category: "메타 태그",
+    });
   }
   if (scores.structureScore < 60) {
     items.push({ id: "struct", title: "페이지 구조 점수 미흡", tip: "H1/H2 헤딩을 질문형으로 재구성하고, 본문 첫 단락에 핵심 답변을 배치하세요.", priority: "high", category: "콘텐츠 구조" });

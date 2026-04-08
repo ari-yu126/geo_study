@@ -27,8 +27,21 @@ const DEFAULT_TRUST_SIGNALS: TrustSignals = {
   hasAboutLink: false,
 };
 
+function metaDescriptionSignals(meta: AnalysisResult['meta']) {
+  const hasMetaDescription = !!(meta.description?.trim());
+  const hasOgDescription = !!(meta.ogDescription?.trim());
+  const descriptionLength = meta.description?.trim().length ?? 0;
+  const effectiveDescriptionLength = hasMetaDescription
+    ? descriptionLength
+    : hasOgDescription
+      ? meta.ogDescription!.trim().length
+      : 0;
+  return { hasMetaDescription, hasOgDescription, descriptionLength, effectiveDescriptionLength };
+}
+
 /** Shared PageFeatures builder for scoring / GEO explain rule evaluation */
 export function buildPageFeaturesFromResult(result: AnalysisResult): PageFeatures {
+  const sig = metaDescriptionSignals(result.meta);
   return {
     meta: result.meta,
     headings: result.headings ?? [],
@@ -36,11 +49,15 @@ export function buildPageFeaturesFromResult(result: AnalysisResult): PageFeature
     pageQuestions: result.pageQuestions,
     seedKeywords: result.seedKeywords,
     questionCoverage: result.scores.questionCoverage,
+    questionMatchScore: result.scores.questionMatchScore,
     structureScore: result.scores.structureScore,
     hasFaqSchema: result.hasFaqSchema ?? false,
     hasStructuredData: result.hasStructuredData ?? false,
     hasReviewSchema: result.hasReviewSchema ?? false,
-    descriptionLength: result.meta.description?.trim().length ?? 0,
+    descriptionLength: sig.descriptionLength,
+    hasMetaDescription: sig.hasMetaDescription,
+    hasOgDescription: sig.hasOgDescription,
+    effectiveDescriptionLength: sig.effectiveDescriptionLength,
     contentQuality: result.contentQuality ?? DEFAULT_CONTENT_QUALITY,
     trustSignals: result.trustSignals ?? DEFAULT_TRUST_SIGNALS,
   };

@@ -5,7 +5,16 @@ import {
 } from './analysisLlm';
 import { isLlmCooldown, getCooldownRemainingSec } from './llmError';
 import { withGeminiRetry } from './geminiRetry';
-import type { AnalysisMeta, AnalysisResult, AuditIssue, GeoScores, SeedKeyword, TrustSignals, SearchQuestion } from './analysisTypes';
+import type {
+  AnalysisMeta,
+  AnalysisResult,
+  AuditIssue,
+  GeoScores,
+  PlatformType,
+  SeedKeyword,
+  TrustSignals,
+  SearchQuestion,
+} from './analysisTypes';
 
 export class VideoAnalysisQuotaSkipError extends Error {
   retryAfterSec?: number;
@@ -230,6 +239,8 @@ JSON:`;
 
 export interface BuildYouTubeOptions {
   hasActualAiCitation: boolean;
+  /** Original URL entered by the user (for result.url); analysis still uses canonical `url` parameter */
+  originalInputUrl?: string;
   /** video 전용: questionCoverage/answerability 0 방지용 텍스트 (description + title + channel) */
   effectiveContentText?: string;
   usedOEmbed?: boolean;
@@ -274,7 +285,9 @@ export async function buildYouTubeAnalysisResult(
     searchQuestions: passedSearchQuestions,
     fallbackCitationScore,
     coverageMatchInput: passedCoverageInput,
+    originalInputUrl,
   } = options;
+  const displayUrl = (originalInputUrl?.trim() || url).trim();
   const trustSignals: TrustSignals = {
     hasAuthor: false,
     hasPublishDate: false,
@@ -329,7 +342,9 @@ export async function buildYouTubeAnalysisResult(
   if (searchQuestions.length > 0 && contentForCoverage.length > 0) {
     searchQuestionCovered = computeSearchQuestionCoverage(searchQuestions, coverageInput);
     questionCoverageScore = Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100);
-    questionMatchScore = computeQuestionMatchScore(searchQuestions, contentForCoverage);
+    questionMatchScore = computeQuestionMatchScore(searchQuestions, contentForCoverage, {
+      topicTokens: coverageInput.topicTokens,
+    });
   }
 
   const trustScore = hasActualAiCitation ? 88 : 75;
@@ -431,10 +446,11 @@ export async function buildYouTubeAnalysisResult(
   baseIssues.forEach((issue, i) => { issue.number = i + 1; });
 
   return {
-    url,
+    url: displayUrl,
     normalizedUrl: normalizeUrl(url),
     analyzedAt: new Date().toISOString(),
     pageType: 'video' as const,
+    platform: 'youtube' as PlatformType,
     meta,
     seedKeywords,
     pageQuestions,

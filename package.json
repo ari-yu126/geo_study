@@ -11,7 +11,10 @@
     "summarize:editorial-subtype": "tsx scripts/summarize-editorial-subtype-validation.ts",
     "evaluate:geo-ai-citations": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/evaluate-geo-ai-citation-dataset.ts",
     "evaluate:geo-ai-citations-paired": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/evaluate-geo-ai-citation-paired-dataset.ts",
-    "verify:recommendation-snapshots": "tsx scripts/verify-recommendation-snapshots.ts"
+    "verify:recommendation-snapshots": "tsx scripts/verify-recommendation-snapshots.ts",
+    "validate:answerability-samples": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/validate-answerability-samples.ts",
+    "validate:naver-url-consistency": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/validate-naver-url-consistency.ts",
+    "sync:editorial-answerability-config": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/sync-editorial-answerability-config.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

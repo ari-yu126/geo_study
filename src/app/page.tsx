@@ -1,7 +1,14 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import type { AnalysisResult, AuditIssue, IframePositionData, PassedCheck } from "@/lib/analysisTypes";
+import { Suspense, useState, useEffect, useRef, useCallback } from "react";
+import type {
+  AnalysisResult,
+  AuditIssue,
+  IframePositionData,
+  PassedCheck,
+  PlatformConstraint,
+} from "@/lib/analysisTypes";
+import { normalizeUrl, sanitizeIncomingAnalyzeUrl } from "@/lib/normalizeUrl";
 import { toEmbedUrl } from "@/lib/youtubeMetadataExtractor";
 import { deriveAuditIssues } from "@/lib/issueDetector";
 import AuditPanel from "./components/AuditPanel";
@@ -21,25 +28,29 @@ const LOADING_STEPS = [
   "결과 저장 중...",
 ];
 
-function getInitialUrl(): string {
+function getInitialUrlSanitized(): string {
   if (typeof window === "undefined") return "";
   const params = new URLSearchParams(window.location.search);
-  return params.get("url") ?? "";
+  const raw = params.get("url") ?? "";
+  const sanitized = sanitizeIncomingAnalyzeUrl(raw);
+  if (!sanitized) return "";
+  return normalizeUrl(sanitized);
 }
 
-/** POST /api/analyze — forceRefresh defaults false (cache-friendly). */
+/** POST /api/analyze — forceRefresh defaults false (cache-friendly). Body uses canonical URL (e.g. Naver → m.blog). */
 function postAnalyzeRequest(targetUrl: string, forceRefresh: boolean) {
-  const trimmed = targetUrl.trim();
-  console.log("[ANALYZE REQUEST]", { url: trimmed, forceRefresh });
+  const trimmed = sanitizeIncomingAnalyzeUrl(targetUrl);
+  const canonical = trimmed ? normalizeUrl(trimmed) : "";
+  console.log("[ANALYZE REQUEST]", { url: canonical, forceRefresh });
   return fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: trimmed, forceRefresh }),
+    body: JSON.stringify({ url: canonical, forceRefresh }),
   });
 }
 
 export default function Home() {
-  const [url, setUrl] = useState(getInitialUrl);
+  const [url, setUrl] = useState(getInitialUrlSanitized);
   const [status, setStatus] = useState<Status>("idle");
   const initialLoadRef = useRef(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -50,6 +61,7 @@ export default function Home() {
   const [positionData, setPositionData] = useState<IframePositionData | null>(null);
   const [issues, setIssues] = useState<AuditIssue[]>([]);
   const [passedChecks, setPassedChecks] = useState<PassedCheck[]>([]);
+  const [platformConstraints, setPlatformConstraints] = useState<PlatformConstraint[] | undefined>(undefined);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   const [iframeScrollTop, setIframeScrollTop] = useState(0);
   const [reanalyzing, setReanalyzing] = useState(false);
@@ -63,6 +75,21 @@ export default function Home() {
   const overlayRef = useRef<HTMLDivElement>(null);
   const currentAnalyzedUrlRef = useRef<string>("");
   const highlightedElRef = useRef<{ el: HTMLElement; originalBg: string; originalBoxShadow: string } | null>(null);
+
+  // Polluted ?url=... (e.g. &forceRefresh merged into value): sync address bar to sanitized form once
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("url");
+    if (raw == null || raw === "") return;
+    const clean = sanitizeIncomingAnalyzeUrl(raw);
+    const canonical = clean ? normalizeUrl(clean) : "";
+    if (canonical && canonical !== raw) {
+      const u = new URL(window.location.href);
+      u.searchParams.set("url", canonical);
+      window.history.replaceState({}, "", u.toString());
+    }
+  }, []);
 
   // 쿼리 파라미터에 url이 있으면 자동 분석
   useEffect(() => {
@@ -87,10 +114,13 @@ export default function Home() {
 
   useEffect(() => {
     if (!result) return;
-    deriveAuditIssues(result, positionData ?? undefined).then(({ issues: newIssues, passedChecks: newPassed }) => {
-      setIssues(newIssues);
-      setPassedChecks(newPassed);
-    });
+    deriveAuditIssues(result, positionData ?? undefined).then(
+      ({ issues: newIssues, passedChecks: newPassed, platformConstraints: pc }) => {
+        setIssues(newIssues);
+        setPassedChecks(newPassed);
+        setPlatformConstraints(pc);
+      }
+    );
   }, [result, positionData]);
 
   // iframe 스크롤 동기화
@@ -114,8 +144,12 @@ export default function Home() {
   }, [status]);
 
   const runAnalyze = async (targetUrl: string, options?: { forceRefresh?: boolean }) => {
-    if (!targetUrl.trim()) return;
+    const clean = sanitizeIncomingAnalyzeUrl(targetUrl);
+    if (!clean) return;
+    const canonical = normalizeUrl(clean);
     const forceRefresh = options?.forceRefresh === true;
+
+    setUrl(canonical);
 
     setStatus("loading");
     setError("");
@@ -135,7 +169,7 @@ export default function Home() {
     }, 800);
 
     try {
-      const res = await postAnalyzeRequest(targetUrl, forceRefresh);
+      const res = await postAnalyzeRequest(canonical, forceRefresh);
 
       clearInterval(stepInterval);
       setLoadingStep(LOADING_STEPS.length - 1);
@@ -148,7 +182,7 @@ export default function Home() {
 
       const data = await res.json();
       const resResult = data.result as import("@/lib/analysisTypes").AnalysisResult;
-      setResult(resResult);
+      setResult({ ...resResult, url: canonical });
       setAnalyzeMeta({
         fromCache: Boolean(data.fromCache),
         cacheLayer: typeof data.cacheLayer === "string" ? data.cacheLayer : "none",
@@ -159,12 +193,11 @@ export default function Home() {
         .slice(0, 3);
       const golden = topChunks.map((c: { index: number }) => c.index).join(",");
       const reasons = topChunks.map((c: { reason?: string }) => c.reason ?? "AI 분석 기반 고품질 문단").join("||");
-      const trimmed = targetUrl.trim();
-      const embedUrl = toEmbedUrl(trimmed);
+      const embedUrl = toEmbedUrl(canonical);
       const iframeSrc = embedUrl
         ? embedUrl
         : (() => {
-            const proxyUrl = `/api/proxy?url=${encodeURIComponent(trimmed)}`;
+            const proxyUrl = `/api/proxy?url=${encodeURIComponent(canonical)}`;
             const params = new URLSearchParams();
             if (golden) params.set("golden", golden);
             if (reasons) params.set("reasons", reasons);
@@ -172,10 +205,11 @@ export default function Home() {
           })();
       setIframeSrc(iframeSrc);
       setStatus("success");
-      currentAnalyzedUrlRef.current = targetUrl.trim();
+      setUrl(canonical);
+      currentAnalyzedUrlRef.current = canonical;
 
       const browserUrl = new URL(window.location.href);
-      browserUrl.searchParams.set("url", targetUrl.trim());
+      browserUrl.searchParams.set("url", canonical);
       window.history.replaceState({}, "", browserUrl.toString());
     } catch (err) {
       clearInterval(stepInterval);
@@ -185,30 +219,34 @@ export default function Home() {
   };
 
   const reanalyzeInBackground = useCallback(async (targetUrl: string) => {
+    const clean = sanitizeIncomingAnalyzeUrl(targetUrl);
+    if (!clean) return;
+    const canonical = normalizeUrl(clean);
+
     setReanalyzing(true);
     setPositionData(null);
     setActiveIssueId(null);
-    currentAnalyzedUrlRef.current = targetUrl;
+    currentAnalyzedUrlRef.current = canonical;
 
     try {
-      const res = await postAnalyzeRequest(targetUrl, false);
+      const res = await postAnalyzeRequest(canonical, false);
 
       if (!res.ok) return;
 
       const data = await res.json();
       const resResult = data.result;
-      setResult(resResult);
+      setResult({ ...resResult, url: canonical });
       setAnalyzeMeta({
         fromCache: Boolean(data.fromCache),
         cacheLayer: typeof data.cacheLayer === "string" ? data.cacheLayer : "none",
       });
-      setUrl(targetUrl);
+      setUrl(canonical);
 
-      const embed = toEmbedUrl(targetUrl.trim());
+      const embed = toEmbedUrl(canonical);
       if (embed) setIframeSrc(embed);
 
       const browserUrl = new URL(window.location.href);
-      browserUrl.searchParams.set("url", targetUrl.trim());
+      browserUrl.searchParams.set("url", canonical);
       window.history.replaceState({}, "", browserUrl.toString());
     } catch {
       // 백그라운드 재분석 실패 시 기존 결과 유지
@@ -223,10 +261,9 @@ export default function Home() {
 
     try {
       const iframeSrc = iframe.contentWindow?.location.href ?? "";
-      const match = iframeSrc.match(/[?&]url=([^&]+)/);
-      if (!match) return;
-
-      const navigatedUrl = decodeURIComponent(match[1]);
+      if (!iframeSrc) return;
+      const u = new URL(iframeSrc);
+      const navigatedUrl = u.searchParams.get("url");
       if (navigatedUrl && navigatedUrl !== currentAnalyzedUrlRef.current) {
         reanalyzeInBackground(navigatedUrl);
       }
@@ -237,7 +274,9 @@ export default function Home() {
 
   const handleAnalyze = (e: React.FormEvent) => {
     e.preventDefault();
-    runAnalyze(url);
+    const clean = sanitizeIncomingAnalyzeUrl(url);
+    if (!clean) return;
+    runAnalyze(clean);
   };
 
   const handleReset = () => {
@@ -252,6 +291,7 @@ export default function Home() {
     setIframeScrollTop(0);
     setIframeSrc("");
     setPassedChecks([]);
+    setPlatformConstraints(undefined);
     setAnalyzeMeta(null);
 
     const newUrl = new URL(window.location.href);
@@ -369,24 +409,41 @@ export default function Home() {
 
   // ── 결과 화면: 좌측 패널 + 우측 사이트 프리뷰 ──
   if (status === "success" && result) {
+    const videoDescriptionSnippet =
+      result.meta.description?.trim() || result.meta.ogDescription?.trim() || "";
     return (
       <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: "#080c14" }}>
         {/* 좌측 패널 */}
-        <AuditPanel
-          result={result}
-          analyzeMeta={analyzeMeta}
-          issues={issues}
-          passedChecks={passedChecks}
-          activeIssueId={activeIssueId}
-          onIssueClick={handleIssueClick}
-          onReset={handleReset}
-          onExportPPT={handleExportPPT}
-          onNavigate={(newUrl, opts) => runAnalyze(newUrl, opts)}
-          onQuestionClick={handleQuestionClick}
-          onPassedCheckClick={handlePassedCheckClick}
-          exporting={exporting}
-          reanalyzing={reanalyzing}
-        />
+        <Suspense
+          fallback={
+            <aside
+              style={{
+                width: 360,
+                flexShrink: 0,
+                height: "100vh",
+                background: "#0a0f1a",
+                borderRight: "1px solid #1e2d45",
+              }}
+            />
+          }
+        >
+          <AuditPanel
+            result={result}
+            analyzeMeta={analyzeMeta}
+            issues={issues}
+            passedChecks={passedChecks}
+            platformConstraints={platformConstraints ?? result.platformConstraints}
+            activeIssueId={activeIssueId}
+            onIssueClick={handleIssueClick}
+            onReset={handleReset}
+            onExportPPT={handleExportPPT}
+            onNavigate={(newUrl, opts) => runAnalyze(newUrl, opts)}
+            onQuestionClick={handleQuestionClick}
+            onPassedCheckClick={handlePassedCheckClick}
+            exporting={exporting}
+            reanalyzing={reanalyzing}
+          />
+        </Suspense>
 
         {/* 우측: iframe + 오버레이 */}
         <div style={{ flex: 1, position: "relative", overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -405,10 +462,10 @@ export default function Home() {
               {result.meta.title && (
                 <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", marginBottom: 6 }}>{result.meta.title}</div>
               )}
-              {result.meta.description && (
+              {videoDescriptionSnippet && (
                 <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.5, maxHeight: 60, overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {result.meta.description.slice(0, 200)}
-                  {result.meta.description.length > 200 ? "…" : ""}
+                  {videoDescriptionSnippet.slice(0, 200)}
+                  {videoDescriptionSnippet.length > 200 ? "…" : ""}
                 </div>
               )}
             </div>

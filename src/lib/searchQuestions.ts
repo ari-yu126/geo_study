@@ -1,5 +1,6 @@
 import type { AnalysisMeta, SeedKeyword, SearchQuestion, SearchSource, PageType } from './analysisTypes';
 import { normalizeUrl } from './normalizeUrl';
+import { isSearchQuestionAlignedWithTopic } from './searchQuestionTopicUtils';
 import {
   buildQuestionResearchCacheKey,
   getCachedQuestionResearch,
@@ -658,8 +659,10 @@ export async function fetchSearchQuestions(
     const dedupedQuestions = dedupeQuestions(allQuestions);
     const safeQuestions = dedupedQuestions.filter((q) => isValidQuestion(q.text));
     const nonJunkQuestions = safeQuestions.filter((q) => !isJunkQuestion(q.text));
-    const relevantQuestions = nonJunkQuestions.filter((q) =>
-      isRelevantToKeywords(q.text, essentialTokens, Math.min(2, essentialTokens.length))
+    const relevantQuestions = nonJunkQuestions.filter(
+      (q) =>
+        isSearchQuestionAlignedWithTopic(q.text, primaryPhrase, essentialTokens) &&
+        isRelevantToKeywords(q.text, essentialTokens, Math.min(2, essentialTokens.length))
     );
     const filteredQuestions = relevantQuestions.filter((q) => q.text.length > 5);
 

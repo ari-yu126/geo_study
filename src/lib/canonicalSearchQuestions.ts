@@ -5,6 +5,7 @@
 
 import type { AnalysisMeta, PageType, SearchQuestion, SearchSource, SeedKeyword } from './analysisTypes';
 import type { PrimaryTopic } from './searchQuestions';
+import { isSearchQuestionAlignedWithTopic } from './searchQuestionTopicUtils';
 
 const MAX_CANONICAL = 12;
 
@@ -25,10 +26,21 @@ function stripBlogNoise(text: string): string {
 
 /**
  * Heuristic: turn a search result title/snippet into a question-shaped intent string.
+ * When essentialTokens are provided, drops SERP lines that do not align with the page topic
+ * (avoids wrapping unrelated snippets into long pseudo-questions).
  */
-export function normalizeEvidenceToQuestion(text: string, isEnglish: boolean, primaryPhrase: string): string | null {
+export function normalizeEvidenceToQuestion(
+  text: string,
+  isEnglish: boolean,
+  primaryPhrase: string,
+  essentialTokens?: string[]
+): string | null {
   const raw = stripBlogNoise(text);
   if (raw.length < 8) return null;
+
+  if (essentialTokens && essentialTokens.length > 0 && primaryPhrase.trim().length >= 2) {
+    if (!isSearchQuestionAlignedWithTopic(raw, primaryPhrase, essentialTokens)) return null;
+  }
 
   const shortened = raw.length > 200 ? `${raw.slice(0, 197)}…` : raw;
   const t = shortened.trim();
@@ -156,14 +168,14 @@ export interface BuildCanonicalSearchQuestionsParams {
  */
 export function buildCanonicalSearchQuestions(params: BuildCanonicalSearchQuestionsParams): SearchQuestion[] {
   const { evidence, seedKeywords, meta, topic, pageType } = params;
-  const { primaryPhrase, isEnglishPage: isEnglish } = topic;
+  const { primaryPhrase, isEnglishPage: isEnglish, essentialTokens } = topic;
   const titleHint = (meta.title ?? meta.ogTitle ?? '').trim();
 
   const fromEvidence: SearchQuestion[] = [];
   const sources: SearchSource[] = [];
 
   for (const ev of evidence) {
-    const canonical = normalizeEvidenceToQuestion(ev.text, isEnglish, primaryPhrase);
+    const canonical = normalizeEvidenceToQuestion(ev.text, isEnglish, primaryPhrase, essentialTokens);
     if (!canonical) continue;
     fromEvidence.push({
       source: ev.source,
@@ -175,13 +187,14 @@ export function buildCanonicalSearchQuestions(params: BuildCanonicalSearchQuesti
 
   const fromSeeds = seedTemplateQuestions(seedKeywords, primaryPhrase, isEnglish, pageType);
 
+  const essentials = topic.essentialTokens ?? [];
   const fromTitle =
     titleHint.length >= 12
       ? [
           {
             source: pickSource(sources) as SearchSource,
             text:
-              normalizeEvidenceToQuestion(titleHint, isEnglish, primaryPhrase) ??
+              normalizeEvidenceToQuestion(titleHint, isEnglish, primaryPhrase, essentials) ??
               (isEnglish
                 ? `What does this page explain about ${primaryPhrase}?`
                 : `이 글이 ${primaryPhrase}에 대해 무엇을 설명하나요?`),
@@ -189,7 +202,8 @@ export function buildCanonicalSearchQuestions(params: BuildCanonicalSearchQuesti
         ]
       : [];
 
-  const merged = dedupeCanonical([...fromEvidence, ...fromTitle, ...fromSeeds]);
+  /** Title + seed intents first so stable topic anchors win over noisy evidence under MAX_CANONICAL */
+  const merged = dedupeCanonical([...fromTitle, ...fromSeeds, ...fromEvidence]);
   if (merged.length > 0) return merged;
 
   const phrase = primaryPhrase.trim() || 'this topic';

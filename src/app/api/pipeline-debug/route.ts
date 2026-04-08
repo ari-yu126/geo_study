@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { fetchHtml, extractMetaAndContent } from '@/lib/htmlAnalyzer';
+import { normalizeUrl } from '@/lib/normalizeUrl';
+import { fetchHtmlWithNaverFallback } from '@/lib/fetchHtmlForAnalysis';
+import { extractMetaAndContent } from '@/lib/htmlAnalyzer';
 import { extractSeedKeywords } from '@/lib/keywordExtractor';
 import { derivePrimaryTopic } from '@/lib/searchQuestions';
 import { buildCanonicalSearchQuestions } from '@/lib/canonicalSearchQuestions';
@@ -153,13 +155,14 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body.url !== 'string') return NextResponse.json({ error: 'url required' }, { status: 400 });
-    const url: string = body.url;
+    const inputUrl = body.url.trim();
+    const normalizedUrl = normalizeUrl(inputUrl);
 
-    // 1) HTML + meta + headings + seed keywords
-    const html = await fetchHtml(url);
+    // 1) HTML + meta + headings + seed keywords (Naver: mobile-first fetch with PC/PostView fallback)
+    const { html, usedFetchUrl } = await fetchHtmlWithNaverFallback(inputUrl, normalizedUrl);
     const { meta, headings, contentText, pageQuestions, hasFaqSchema } = extractMetaAndContent(html);
     const seedKeywords: SeedKeyword[] = extractSeedKeywords(meta as AnalysisMeta, headings, contentText);
-    const primary = derivePrimaryTopic(meta as AnalysisMeta, url, seedKeywords);
+    const primary = derivePrimaryTopic(meta as AnalysisMeta, normalizedUrl, seedKeywords);
 
     // 2) build tavily queries and call
     const focuses: ('faq'|'cons'|'community')[] = ['faq','cons','community'];
@@ -290,7 +293,8 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({
-      url,
+      url: normalizedUrl,
+      fetch_target_url: usedFetchUrl,
       primary,
       seedKeywords,
       tavilyResults: tavilyResults.map(t => ({ focus: t.focus, query: t.query, fetchedCount: t.rawFetch?.results?.length ?? 0, error: t.rawFetch?.error ?? null })),

@@ -35,6 +35,7 @@ function buildRow(input: SaveGeoAnalysisResultInput): Record<string, unknown> {
     url: r.url,
     normalized_url: r.normalizedUrl,
     page_type: r.pageType ?? 'editorial',
+    platform: r.platform ?? null,
     config_version: input.configVersion,
     geo_score: scores.finalScore ?? null,
     score_structure: scores.structureScore ?? null,

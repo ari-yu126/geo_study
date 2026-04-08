@@ -1,5 +1,8 @@
 import * as cheerio from 'cheerio';
 import type { AnalysisMeta, ContentQuality, TrustSignals } from './analysisTypes';
+import { buildEditorialBlogSignals } from './editorialBlogAnswerability';
+import { countQuotableSentencesStrict } from './quotableSentenceDetection';
+import { detectVisibleHostedPublishDateFromDoc } from './hostedBlogPublishDate';
 import { extractSupplementalTextFromJsonLd } from './articleExtraction';
 import { countProductSpecBlocks } from './paragraphAnalyzer';
 
@@ -89,10 +92,15 @@ export async function fetchHtml(url: string, appOrigin?: string): Promise<string
   return html;
 }
 
+export type ExtractMetaOptions = {
+  /** Used for hosted-blog visible publish date heuristics (Naver/Tistory/Brunch) */
+  pageUrl?: string;
+};
+
 /**
  * HTML에서 메타 정보, 제목, 본문 텍스트, 질문 등을 추출합니다.
  */
-export function extractMetaAndContent(html: string): {
+export function extractMetaAndContent(html: string, options?: ExtractMetaOptions): {
   meta: AnalysisMeta;
   headings: string[];
   h1Count: number;
@@ -200,11 +208,29 @@ export function extractMetaAndContent(html: string): {
     $('[rel="author"]').length > 0 ||
     $('[class*="author"], [itemprop="author"]').length > 0
   );
+  const publishDateFromMeta = !!(
+    $('meta[property="article:published_time"]').attr('content')?.trim() ||
+    $('meta[name="date"]').attr('content')?.trim()
+  );
+  const publishDateFromJsonLd = jsonLdDatePublished;
+  const publishDateFromMicrodata =
+    $('[itemprop="datePublished"]').length > 0 || $('time[itemprop="datePublished"]').length > 0;
+  const publishDateFromStructuredData = publishDateFromJsonLd || publishDateFromMicrodata;
+
+  let publishDateFromVisibleUi = false;
+  if (options?.pageUrl) {
+    publishDateFromVisibleUi = detectVisibleHostedPublishDateFromDoc($, options.pageUrl);
+  }
+  if (!publishDateFromVisibleUi && $('time[datetime]').length > 0) {
+    if (!publishDateFromMeta && !publishDateFromStructuredData) {
+      publishDateFromVisibleUi = true;
+    }
+  }
+
   const hasPublishDate = !!(
-    jsonLdDatePublished ||
-    $('meta[property="article:published_time"]').attr('content') ||
-    $('time[datetime]').length > 0 ||
-    $('[itemprop="datePublished"]').length > 0
+    publishDateFromMeta ||
+    publishDateFromStructuredData ||
+    publishDateFromVisibleUi
   );
   const hasModifiedDate = !!(
     jsonLdDateModified ||
@@ -281,18 +307,10 @@ export function extractMetaAndContent(html: string): {
     firstParagraphLength > 80 ||
     /(방법|가이드|추천|고르는|선택|이용).{2,20}(가지|팁|정리)/.test(effectiveFirst);
 
-  // AI Citeability: 인용 가능한 문장 (5-25단어, 숫자/데이터 포함) + 제품 스펙 블록
-  const sentences = contentText.split(/[.!?。]\s+/);
-  let quotableSentenceCount = 0;
-  for (const s of sentences) {
-    const words = s.trim().split(/\s+/);
-    if (words.length >= 3 && words.length <= 30) {
-      if (/\d/.test(s) || /[%₩$원만천억]/.test(s) || /\d+[가-힣]/.test(s)) {
-        quotableSentenceCount++;
-      }
-    }
-  }
+  // AI Citeability: quotable sentences (strict — info / comparison / definition signals; not vague praise)
+  const quotableStrict = countQuotableSentencesStrict(contentText);
   const productSpecBlockCount = countProductSpecBlocks($.html() ?? '');
+  const quotableSentenceCount = quotableStrict.accepted + Math.min(productSpecBlockCount, 5);
 
   // 가격 정보 + 가격 패턴 카운트
   const pricePattern = /(\d{1,3}(?:,\d{3})*\s*원|₩\s*\d{1,3}(?:,\d{3})*|\$\s*\d{1,3}(?:[.,]\d{2})?|\d{1,3}(?:,\d{3})*\s*만원)/g;
@@ -336,6 +354,17 @@ export function extractMetaAndContent(html: string): {
 
   const pageQuestions = extractQuestions(contentText, headings);
 
+  const editorialBlogSignals = buildEditorialBlogSignals({
+    contentText,
+    headings,
+    title: meta.title,
+    effectiveFirst,
+    firstParagraphLength,
+    hasDefinitionPattern,
+    listCount,
+    pageQuestionCount: pageQuestions.length,
+  });
+
   const contentQuality: ContentQuality = {
     contentLength: bodyText.length,
     tableCount,
@@ -344,7 +373,9 @@ export function extractMetaAndContent(html: string): {
     h3Count,
     imageCount,
     hasStepStructure,
-    quotableSentenceCount: quotableSentenceCount + Math.min(productSpecBlockCount, 5),
+    quotableSentenceCount,
+    quotableAcceptedCount: quotableStrict.accepted,
+    quotableRejectedCount: quotableStrict.rejected,
     firstParagraphLength,
     hasDefinitionPattern,
     hasPriceInfo,
@@ -361,11 +392,15 @@ export function extractMetaAndContent(html: string): {
     hasJsonLdOfferOrAggregate,
     hasJsonLdStandaloneProduct,
     hasJsonLdProductInListContext,
+    editorialBlogSignals,
   };
 
   const trustSignals: TrustSignals = {
     hasAuthor,
     hasPublishDate,
+    publishDateFromMeta,
+    publishDateFromStructuredData,
+    publishDateFromVisibleUi,
     hasModifiedDate,
     hasContactLink,
     hasAboutLink,

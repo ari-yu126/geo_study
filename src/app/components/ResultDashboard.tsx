@@ -299,10 +299,14 @@ export default function ResultDashboard({ result, onReset }: ResultDashboardProp
                       <span style={{ fontSize: 12, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase" }}>Title</span>
                       <p style={{ fontSize: 14, fontWeight: 600, color: "#e8edf5", marginTop: 3 }}>{result.meta.title}</p>
                     </div>
-                    {result.meta.description && (
+                    {(result.meta.description?.trim() || result.meta.ogDescription?.trim()) && (
                       <div>
-                        <span style={{ fontSize: 12, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase" }}>Description</span>
-                        <p style={{ fontSize: 12, color: "#8b9cb3", marginTop: 3, lineHeight: 1.6 }}>{result.meta.description}</p>
+                        <span style={{ fontSize: 12, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase" }}>
+                          {result.meta.description?.trim() ? "Meta description" : "OG description"}
+                        </span>
+                        <p style={{ fontSize: 12, color: "#8b9cb3", marginTop: 3, lineHeight: 1.6 }}>
+                          {(result.meta.description?.trim() || result.meta.ogDescription?.trim()) ?? ""}
+                        </p>
                       </div>
                     )}
                   </div>
@@ -462,7 +466,7 @@ export default function ResultDashboard({ result, onReset }: ResultDashboardProp
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {[
                   { label: "Title", value: result.meta.title, required: true },
-                  { label: "Description", value: result.meta.description, required: true },
+                  { label: "Meta description", value: result.meta.description, required: true },
                   { label: "OG Title", value: result.meta.ogTitle, required: false },
                   { label: "OG Description", value: result.meta.ogDescription, required: false },
                   { label: "Canonical", value: result.meta.canonical, required: false },

@@ -8,6 +8,7 @@ import type {
   PageType,
 } from '../analysisTypes';
 import { getEditorialSubtypeTone, refineGeoIssueForEditorialSubtype } from './editorialSubtypeWording';
+import { refineGeoIssueForPlatform } from './platformIssueWording';
 import { buildAxisScores } from './axisScores';
 import type { GeoRuleLayerResult } from './ruleEvaluation';
 
@@ -159,6 +160,7 @@ export async function runEditorialIssueEngine(
   if (editorialTone) {
     failures = failures.map((i) => refineGeoIssueForEditorialSubtype(i, editorialTone));
   }
+  failures = failures.map((i) => refineGeoIssueForPlatform(i, result.platform));
 
   return dedupeGeoIssuesById(failures);
 }
