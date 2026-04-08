@@ -1,0 +1,10 @@
+query,ai_system,cited_url,non_cited_url,domain,date,notes
+# Real AI-cited page vs a comparison URL for the same query (non_cited optional for single-URL runs).
+# date = observation date (YYYY-MM-DD). ai_system: ChatGPT | Perplexity | Google AI Overview
+# domain: optional; auto-filled from cited_url if empty
+#
+# Single-URL validation only: leave non_cited_url empty and use npm run evaluate:geo-ai-citations
+# Paired comparison: fill non_cited_url and use npm run evaluate:geo-ai-citations-paired
+#
+# Example (remove # to use):
+# best wireless earbuds 2025,Perplexity,https://www.rtings.com/headphones/reviews/best/wireless-bluetooth-headphones,https://example.com/competitor/review,rtings.com,2026-03-15,paired test

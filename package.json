@@ -3,18 +3,27 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "next dev -p 6810",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "validate:editorial-subtype": "tsx scripts/validate-editorial-subtype.ts",
+    "summarize:editorial-subtype": "tsx scripts/summarize-editorial-subtype-validation.ts",
+    "evaluate:geo-ai-citations": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/evaluate-geo-ai-citation-dataset.ts",
+    "evaluate:geo-ai-citations-paired": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/evaluate-geo-ai-citation-paired-dataset.ts",
+    "verify:recommendation-snapshots": "tsx scripts/verify-recommendation-snapshots.ts",
+    "validate:answerability-samples": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/validate-answerability-samples.ts",
+    "validate:naver-url-consistency": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/validate-naver-url-consistency.ts",
+    "sync:editorial-answerability-config": "node --env-file=.env.local ./node_modules/tsx/dist/cli.mjs scripts/sync-editorial-answerability-config.ts"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@supabase/auth-helpers-nextjs": "^0.15.0",
     "@supabase/supabase-js": "^2.93.3",
-    "axios": "^1.13.4",
     "cheerio": "^1.2.0",
     "lucide-react": "^0.563.0",
     "next": "16.1.6",
+    "pptxgenjs": "^4.0.1",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
@@ -25,7 +34,9 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
+    "playwright": "^1.58.2",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }

@@ -1,0 +1,40 @@
+---
+description: Recommendation panel = Content Improvement Guide (not score or diagnostics copy)
+alwaysApply: true
+---
+
+# GEO — Recommendation as Content Improvement Guide
+
+## Purpose
+
+The **Recommendation** block is a **content improvement guide**: structure, sections to add, blocks to write, and short “what to do next” lines. **Draft writing examples** (summary, FAQ, pros/cons, verdict, page-specific headings) belong to the **AI Writing Assistant** layer (separate UI + API), not deterministic recommendation output.
+
+It must **not** read as a score explanation, SEO audit report, or internal diagnostics dump.
+
+## Separation
+
+| Internal (Analysis pipeline) | User-facing (Recommendation) |
+|-----------------------------|------------------------------|
+| Scores, axis values, caps | What is missing, what to add, where, how to write |
+| Issues, opportunities (engine) | Gaps, priority actions, headings, blocks (no generated prose examples) |
+| Trace ids (`axis:*`, `signal:*`) | Plain language only (no axis/score/signal wording) |
+
+Trace fields remain for debugging; **never** surface trace vocabulary in recommendation strings or panel labels meant for writers.
+
+## Questions the panel should answer
+
+1. What is missing from the article?
+2. What should I add?
+3. Where should new sections go (H2/H3 suggestions)?
+4. How should I structure summaries, FAQs, conclusions? (structure hints in the guide; **example prose** only after the user invokes AI Writing Assistant.)
+
+## Tone
+
+- Sound like an **editor** giving writing and structure advice.
+- Not: SEO tool jargon, “evaluation report,” or scoring terminology in this panel.
+
+## Implementation touchpoints
+
+- Copy: `src/lib/recommendations/templates/ko.ts`, `en.ts`
+- Layout labels: `src/lib/recommendations/recommendationUiLabels.ts`
+- Rule engine uses internal inputs; user strings stay non-technical (`buildGeoRecommendations.ts`, `rules/*.ts`)

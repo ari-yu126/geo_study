@@ -1,0 +1,240 @@
+import type { GeoScoringConfig, YouTubePassedCheckRule } from './analysisTypes';
+import { DEFAULT_EDITORIAL_ANSWERABILITY_RULES } from './editorialBlogAnswerability';
+
+const DEFAULT_YOUTUBE_PASSED_CHECK_RULES: YouTubePassedCheckRule[] = [
+  { id: 'yt_title_opt', label: '제목 최적화', reason: '제목에 시드 키워드가 포함되어 검색·AI 인용 노출에 유리합니다.', check: 'yt_title_opt' },
+  { id: 'yt_info_density', label: '정보 밀도', reason: '설명란이 300자 이상으로 AI가 콘텐츠 요약을 추출하기에 충분합니다.', check: 'yt_info_density', threshold: 300 },
+  { id: 'yt_chapter', label: '구조화(챕터)', reason: '설명란에 타임스탬프(00:00)가 있어 AI가 특정 구간을 인용하기 쉽습니다.', check: 'yt_chapter' },
+  { id: 'yt_authority', label: '권위 증거', reason: 'AI 인용 데이터에서 해당 도메인이 확인되어 신뢰도가 높습니다.', check: 'yt_authority' },
+  { id: 'yt_gemini_factor', label: 'AI 평가', reason: '영상의 정보 전달력이 명확함', check: 'yt_gemini_factor' },
+];
+
+export const DEFAULT_SCORING_CONFIG: GeoScoringConfig = {
+  version: '3.0.0',
+  updatedAt: '2026-02-21T00:00:00.000Z',
+  source: 'manual',
+  researchSummary:
+    'aisearchvisibility.ai GEO Scoring Methodology v2.0 기반. 3축 평가: AI Answerability(50%) + SEO Structure(30%) + Trust(20%). 질문 커버리지는 보너스로만 반영.',
+
+  structureBaseScore: 20,
+
+  // SEO Structure (30%) — 기술 구조
+  structureRules: [
+    { id: 'title_exists', label: 'Title 태그 존재', check: 'title_exists', points: 12 },
+    { id: 'meta_desc', label: 'Meta Description (name=description)', check: 'meta_description_present', points: 10 },
+    {
+      id: 'og_desc_partial',
+      label: 'OG description only (partial signal)',
+      check: 'og_only_description_partial_credit',
+      points: 5,
+    },
+    { id: 'desc_length', label: 'Description 길이 적절', check: 'desc_length_range', points: 6 },
+    { id: 'h1_single', label: 'H1 태그 단일 사용', check: 'h1_single', points: 8 },
+    { id: 'h2_depth', label: 'H2 섹션 구조화', check: 'h2_count_min', points: 8, threshold: 2 },
+    { id: 'og_tags', label: 'OG 태그 설정', check: 'og_tags_exist', points: 6 },
+    { id: 'canonical', label: 'Canonical URL', check: 'canonical_exists', points: 6 },
+    { id: 'headings_min', label: '헤딩 태그 충분', check: 'headings_min', points: 6, threshold: 3 },
+    { id: 'schema', label: '구조화 데이터', check: 'structured_data_exists', points: 8 },
+    { id: 'faq_schema', label: 'FAQ 스키마', check: 'schema_faq_exists', points: 6 },
+    { id: 'schema_product', label: '쇼핑/상품 스키마', check: 'schema_product_exists', points: 12 },
+  ],
+
+  answerabilityRules: [
+    { id: 'first_para', label: '첫 문단 품질 (30자+)', check: 'first_paragraph_quality', points: 14, threshold: 30 },
+    { id: 'definition', label: '정의/설명 패턴 포함', check: 'has_definition', points: 12 },
+    { id: 'quotable', label: '인용 가능 문장/데이터 (3개+)', check: 'quotable_sentences_min', points: 14, threshold: 3 },
+    { id: 'data_dense', label: '제품 스펙 블록 (2개+)', check: 'data_dense_blocks_min', points: 8, threshold: 2 },
+    { id: 'content_len', label: '콘텐츠 분량 (3,000자+)', check: 'content_length_min', points: 10, threshold: 3000 },
+    { id: 'content_deep', label: '심층 콘텐츠 (8,000자+)', check: 'content_depth', points: 8, threshold: 8000 },
+    { id: 'tables', label: '비교표/데이터 테이블', check: 'tables_min', points: 10, threshold: 1 },
+    { id: 'lists', label: '목록(ul/ol) 활용', check: 'lists_min', points: 6, threshold: 2 },
+    { id: 'questions', label: '질문/답변 패턴 포함', check: 'questions_min', points: 6, threshold: 2 },
+    { id: 'price', label: '가격/비용 정보 노출', check: 'has_price_info', points: 6 },
+    { id: 'images', label: '시각 자료 포함', check: 'images_min', points: 4, threshold: 1 },
+    { id: 'step', label: '단계별 가이드 구조', check: 'has_step_structure', points: 6 },
+  ],
+
+  /** Editorial / blog pages (non-commerce, non–data-heavy) — see editorialBlogAnswerability.ts */
+  answerabilityRulesEditorial: DEFAULT_EDITORIAL_ANSWERABILITY_RULES,
+
+  // Trust & E-E-A-T (20%) — 신뢰 신호
+  trustRules: [
+    { id: 'domain_authority', label: 'Top Tier 도메인 (화이트리스트)', check: 'has_domain_authority', points: 30 },
+    { id: 'search_exposure', label: '검색 상위 노출 확인 (Tavily)', check: 'has_search_exposure', points: 25 },
+    { id: 'author', label: '저자 정보', check: 'has_author', points: 20 },
+    { id: 'pub_date', label: '발행일 표시', check: 'has_publish_date', points: 20 },
+    { id: 'mod_date', label: '수정일 표시', check: 'has_modified_date', points: 15 },
+    { id: 'contact', label: '연락처/상담 링크', check: 'has_contact_link', points: 20 },
+    { id: 'about', label: '소개/회사정보 링크', check: 'has_about_link', points: 15 },
+  ],
+
+  weights: {
+    structure: 0.30,
+    coverage: 0.05,
+  },
+
+  issueRules: [
+    {
+      id: 'first_para',
+      check: 'first_paragraph_quality',
+      threshold: 30,
+      label: '첫 문단이 너무 짧음',
+      description: '첫 문단(또는 H1)에 주제와 가치(예: "방법 5가지", "고르는 방법")를 담아 AI가 핵심을 빠르게 파악할 수 있게 하세요. 30자 이상을 권장합니다.',
+      priority: 'high',
+      targetSelector: 'h1',
+      targetIndex: 0,
+    },
+    {
+      id: 'quotable',
+      check: 'quotable_sentences_min',
+      threshold: 3,
+      label: '인용 가능 문장 부족',
+      description: '구체적 수치나 데이터가 포함된 짧은 문장(5-25단어)을 추가하세요. AI는 이런 문장을 직접 인용합니다.',
+      priority: 'high',
+      targetSelector: 'h2',
+      targetIndex: 0,
+    },
+    {
+      id: 'content_short',
+      check: 'content_length_min',
+      threshold: 3000,
+      label: '콘텐츠 분량 부족',
+      description: '최소 3,000자 이상의 포괄적인 콘텐츠를 작성하세요. AI는 주제를 깊이 다루는 페이지를 선호합니다.',
+      priority: 'high',
+      targetSelector: 'h1',
+      targetIndex: 0,
+    },
+    {
+      id: 'no_tables',
+      check: 'tables_min',
+      threshold: 1,
+      label: '비교표/데이터 테이블 없음',
+      description: '비교표를 추가하면 AI가 구조화된 데이터를 쉽게 추출하고 답변에 활용합니다.',
+      priority: 'high',
+      targetSelector: 'h2',
+      targetIndex: 0,
+    },
+    {
+      id: 'title',
+      check: 'title_exists',
+      label: 'Title 태그 누락',
+      description: '페이지 제목을 설정하세요. AI가 페이지 주제를 판단하는 핵심 신호입니다.',
+      priority: 'high',
+      targetSelector: '_top',
+      targetIndex: 0,
+    },
+    {
+      id: 'desc',
+      check: 'description_any_signal',
+      label: 'Meta / OG 설명 모두 없음',
+      description:
+        '표준 meta description과 og:description이 모두 없습니다. 검색·AI 스니펫에 쓸 한 줄 요약을 최소 하나는 제공하세요.',
+      priority: 'high',
+      targetSelector: '_top',
+      targetIndex: 1,
+    },
+    {
+      id: 'desc_og_only',
+      check: 'meta_description_or_no_og',
+      label: 'Meta description 없음 (og:description만 있음)',
+      description:
+        'Meta description tag is not present, but og:description is available. This provides some descriptive signal, but a standard meta description would improve consistency.',
+      priority: 'medium',
+      targetSelector: '_top',
+      targetIndex: 1,
+    },
+    {
+      id: 'author',
+      check: 'has_author',
+      label: '저자 정보 없음',
+      description: '저자명과 자격/전문성 정보를 추가하세요. AI는 E-E-A-T 신호로 신뢰도를 평가합니다.',
+      priority: 'medium',
+      targetSelector: '_top',
+      targetIndex: 2,
+    },
+    {
+      id: 'pub_date',
+      check: 'has_publish_date',
+      label: '발행일/수정일 없음',
+      description: '콘텐츠 발행일과 최종 수정일을 표시하세요. AI는 최신 정보를 선호합니다.',
+      priority: 'medium',
+      targetSelector: '_top',
+      targetIndex: 3,
+    },
+    {
+      id: 'og',
+      check: 'og_tags_exist',
+      label: 'OG 태그 미설정',
+      description: 'og:title, og:description을 설정하면 AI 크롤러의 컨텍스트 파악이 쉬워집니다.',
+      priority: 'medium',
+      targetSelector: '_top',
+      targetIndex: 4,
+    },
+    {
+      id: 'canonical',
+      check: 'canonical_exists',
+      label: 'Canonical URL 없음',
+      description: '중복 콘텐츠 방지를 위해 canonical 태그를 추가하세요.',
+      priority: 'medium',
+      targetSelector: '_top',
+      targetIndex: 5,
+    },
+    {
+      id: 'no_schema',
+      check: 'structured_data_exists',
+      label: '구조화 데이터 없음',
+      description: 'JSON-LD 구조화 데이터를 추가하면 AI가 콘텐츠를 더 정확하게 이해합니다.',
+      priority: 'medium',
+      targetSelector: '_top',
+      targetIndex: 6,
+    },
+    {
+      id: 'no_lists',
+      check: 'lists_min',
+      threshold: 2,
+      label: '목록(ul/ol) 부족',
+      description: '핵심 포인트를 목록으로 정리하면 AI가 정보를 추출하기 쉬워집니다.',
+      priority: 'low',
+      targetSelector: 'h2',
+      targetIndex: 0,
+    },
+    {
+      id: 'contact',
+      check: 'has_contact_link',
+      label: '연락처/상담 링크 없음',
+      description: '고객 상담, 연락처 링크를 추가하면 신뢰도가 높아집니다.',
+      priority: 'low',
+      targetSelector: '_bottom',
+      targetIndex: 0,
+    },
+  ],
+
+  youtubePassedCheckRules: DEFAULT_YOUTUBE_PASSED_CHECK_RULES,
+  youtubeAllowedIssueIds: ['title', 'desc', 'desc_og_only', 'og', 'canonical'],
+  commerceDomains: [
+    'coupang.com',
+    'amazon.',
+    'gmarket.co.kr',
+    '11st.co.kr',
+    'auction.co.kr',
+    'danawa.com',
+    // Phase 1 operational fallbacks for known hard-to-crawl malls
+    'lotteimall.com',
+    'zara.com',
+    'ssg.com',
+    'walmart.com',
+  ],
+  profiles: {
+    // Commerce profile: prioritize structure and product/schema signals, de-emphasize editorial text rules
+    commerce: {
+      // v26.03 Commerce Update — prioritize data density / structure / trust
+      weights: {
+        dataDensity: 0.4,
+        structure: 0.3,
+        trust: 0.3,
+      },
+      issueRules: [],
+      queryTemplates: [],
+    },
+  },
+};

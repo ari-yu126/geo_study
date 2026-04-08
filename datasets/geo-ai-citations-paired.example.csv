@@ -1,0 +1,4 @@
+query,ai_system,cited_url,non_cited_url,domain,date,notes
+# Paired rows: non_cited_url = same-query page that was NOT cited (your control). One analysis row = two URLs.
+# Example (uncomment to run):
+# best quiet keyboard,Perplexity,https://www.rtings.com/keyboard/reviews/best/quiet,https://www.pcgamer.com/best-quiet-keyboards/,rtings.com,2026-04-01,editorial vs editorial
