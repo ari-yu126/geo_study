@@ -343,6 +343,9 @@ export async function GET(req: NextRequest) {
     const targetOrigin = parsedUrl.origin;
     const baseHref = parsedUrl.origin + parsedUrl.pathname.replace(/\/[^/]*$/, '/');
 
+    console.log('[fetch] trying url:', url);
+    console.log('[fetch] userAgent:', 'proxy-upstream');
+
     const response = await fetch(url, {
       headers: {
         'User-Agent':
@@ -358,6 +361,10 @@ export async function GET(req: NextRequest) {
       },
       redirect: 'follow',
     });
+
+    console.log('[fetch] status:', response.status);
+    console.log('[fetch] finalUrl:', response.url);
+    console.log('[fetch] contentType:', response.headers.get('content-type'));
 
     if (!response.ok) {
       // Gather upstream metadata
@@ -612,6 +619,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
+    console.error('[proxy] GET fetch failed:', err);
     const errorHtml = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0a0f1a;color:#6b7d96;font-family:system-ui;text-align:center">
@@ -661,7 +669,13 @@ export async function POST(req: NextRequest) {
       init.body = body as BodyInit;
     }
 
+    console.log('[fetch] trying url:', targetUrl);
+    console.log('[fetch] userAgent:', 'proxy-post-forward');
+
     const res = await fetch(targetUrl, init);
+    console.log('[fetch] status:', res.status);
+    console.log('[fetch] finalUrl:', res.url);
+    console.log('[fetch] contentType:', res.headers.get('content-type'));
     const data = await res.arrayBuffer();
     return new NextResponse(data, {
       status: res.status,
@@ -670,6 +684,11 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 502 });
+    console.error('[proxy] POST fetch failed:', err);
+    const detail = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      { error: 'Fetch failed', detail },
+      { status: 502 }
+    );
   }
 }

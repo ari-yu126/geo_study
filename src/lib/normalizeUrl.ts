@@ -2,10 +2,53 @@
  * Canonical URL for cache keys and DB normalized_url.
  * Strips query, hash (including #:~:text=), lowercases host, https, trailing slash (non-root).
  * YouTube URLs collapse to https://www.youtube.com/watch?v={id} so ?v= is preserved semantically.
+ * Search/listing pages (path segment `search`): preserves identity params (e.g. keyword, q) so SERPs stay distinct.
  */
 
 import { canonicalizePlatformUrl } from './canonicalizePlatformUrl';
 import { extractVideoId } from './youtubeMetadataExtractor';
+
+function geoNormalizeDebug(): boolean {
+  if (typeof process === 'undefined') return false;
+  return (
+    process.env.GEO_DEBUG === '1' ||
+    process.env.NEXT_PUBLIC_GEO_DEBUG === '1'
+  );
+}
+
+/**
+ * Path segment is literally `search` (e.g. /n/search, /goods/search). Not "research".
+ */
+function pathnameHasSearchSegment(pathname: string): boolean {
+  return pathname
+    .toLowerCase()
+    .split('/')
+    .filter(Boolean)
+    .some((seg) => seg === 'search');
+}
+
+/** Query keys that define which SERP/listing is shown (cache key must include them). */
+const SEARCH_IDENTITY_PARAM_KEYS = [
+  'keyword',
+  'q',
+  'query',
+  'k',
+  'search_word',
+  'searchword',
+  'kw',
+] as const;
+
+function collectSearchIdentityParams(source: URL): URLSearchParams | null {
+  if (!pathnameHasSearchSegment(source.pathname)) return null;
+  const out = new URLSearchParams();
+  for (const key of SEARCH_IDENTITY_PARAM_KEYS) {
+    const v = source.searchParams.get(key);
+    if (v != null && v.trim() !== '') {
+      out.set(key, v);
+    }
+  }
+  return out.size > 0 ? out : null;
+}
 
 /**
  * Removes mistaken `forceRefresh` / `force_refresh` flags accidentally merged into the URL string
@@ -62,12 +105,15 @@ export function normalizeUrl(rawUrl: string): string {
     const vid = extractVideoId(cleanedInput);
     if (vid) {
       const normalizedUrl = `https://www.youtube.com/watch?v=${vid}`;
-      console.log('[normalizeUrl]', rawUrl, '->', normalizedUrl);
+      if (geoNormalizeDebug()) {
+        console.log('[normalizeUrl]', rawUrl, '->', normalizedUrl);
+      }
       return normalizedUrl;
     }
 
     const platformCanonical = canonicalizePlatformUrl(cleanedInput);
     const url = new URL(platformCanonical);
+    const searchIdentity = collectSearchIdentityParams(url);
 
     url.search = '';
     url.hash = '';
@@ -81,10 +127,22 @@ export function normalizeUrl(rawUrl: string): string {
       normalized = normalized.slice(0, -1);
     }
 
-    console.log('[normalizeUrl]', rawUrl, '->', normalized);
+    if (searchIdentity) {
+      const withQuery = new URL(normalized);
+      for (const [k, v] of searchIdentity) {
+        withQuery.searchParams.set(k, v);
+      }
+      normalized = withQuery.toString();
+    }
+
+    if (geoNormalizeDebug()) {
+      console.log('[normalizeUrl]', rawUrl, '->', normalized);
+    }
     return normalized;
   } catch {
-    console.log('[normalizeUrl]', rawUrl, '->', cleanedInput, '(parse failed)');
+    if (geoNormalizeDebug()) {
+      console.log('[normalizeUrl]', rawUrl, '->', cleanedInput, '(parse failed)');
+    }
     return cleanedInput;
   }
 }

@@ -57,23 +57,63 @@ export async function fetchHtml(url: string, appOrigin?: string): Promise<string
   const fetchUrl = appOrigin
     ? `${appOrigin}/api/proxy?url=${encodeURIComponent(url)}`
     : url;
+  /** `direct` = same-origin/upstream fetch; `proxy` = app /api/proxy (iframe parity). */
+  const userAgentType = appOrigin ? 'proxy' : 'direct';
 
-  const response = await fetch(fetchUrl, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Referer': 'https://www.google.com/',
-      'Sec-Fetch-Dest': 'document',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Site': 'cross-site',
-      'Sec-Fetch-User': '?1',
-    },
-    redirect: 'follow',
-  });
+  console.log('[fetch] trying url:', url);
+  if (fetchUrl !== url) console.log('[fetch] requestUrl:', fetchUrl);
+  console.log('[fetch] userAgent:', userAgentType);
+
+  let response: Response;
+  try {
+    response = await fetch(fetchUrl, {
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://www.google.com/',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'cross-site',
+        'Sec-Fetch-User': '?1',
+      },
+      redirect: 'follow',
+    });
+  } catch (error) {
+    console.error('[fetch] network error:', error);
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Fetch failed (network): ${detail}`);
+  }
+
+  console.log('[fetch] status:', response.status);
+  console.log('[fetch] finalUrl:', response.url);
+  console.log('[fetch] contentType:', response.headers.get('content-type'));
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+    let extra = '';
+    const ct = (response.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('application/json')) {
+      try {
+        const j = (await response.json()) as {
+          upstreamStatus?: number;
+          upstreamStatusText?: string;
+          errorType?: string;
+          finalUrl?: string;
+        };
+        const parts: string[] = [];
+        if (typeof j.upstreamStatus === 'number') {
+          parts.push(`upstream HTTP ${j.upstreamStatus}${j.upstreamStatusText ? ` ${j.upstreamStatusText}` : ''}`);
+        }
+        if (j.errorType) parts.push(`type=${j.errorType}`);
+        if (j.finalUrl) parts.push(`final=${j.finalUrl}`);
+        if (parts.length > 0) extra = ` (${parts.join(', ')})`;
+      } catch {
+        /* ignore JSON parse errors */
+      }
+    }
+    const errMsg = `Failed to fetch ${url}: ${response.status} ${response.statusText}${extra}`;
+    console.error('[fetch] fetch failed:', errMsg);
+    throw new Error(errMsg);
   }
 
   const html = await response.text();

@@ -39,7 +39,18 @@ export function derivePrimaryTopic(
     '추천', '후기', '모음', '공지사항', '수강후기', 'zip', '장점', '단점', '관련', '질문', '답변',
   ]);
 
-  const isGeneric = (t: string) => GENERIC_STOPWORDS.has(t.toLowerCase()) || t.length < 3;
+  /** URL path segments that look like a topic but are not (CMS routes, listing shells). */
+  const GENERIC_PATH_SLUGS = new Set([
+    'info', 'index', 'page', 'pages', 'detail', 'details', 'view', 'article', 'articles',
+    'post', 'posts', 'list', 'listing', 'category', 'categories', 'search', 'home', 'main',
+    'default', 'content', 'item', 'items', 'board', 'bbs', 'news', 'event', 'events',
+    'cart', 'checkout',
+  ]);
+
+  const isGeneric = (t: string) => {
+    const lower = t.toLowerCase();
+    return GENERIC_STOPWORDS.has(lower) || GENERIC_PATH_SLUGS.has(lower) || t.length < 3;
+  };
 
   // 1) URL path slug
   let slugTokens: string[] = [];

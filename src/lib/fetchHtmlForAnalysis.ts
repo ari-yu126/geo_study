@@ -8,6 +8,46 @@ import { fetchHtml } from './htmlAnalyzer';
 import { fetchHtmlViaHeadless } from './headlessHtmlFetch';
 import { parseNaverBlogPostFromUrlString } from './canonicalizePlatformUrl';
 
+/** How HTML was retrieved for non-Naver URLs (proxy may return 502 when upstream blocks bots). */
+export type HtmlFetchTransport = 'proxy' | 'direct' | 'headless';
+
+/**
+ * Try /api/proxy when appOrigin is set, then same-URL direct fetch, then Playwright.
+ * Used for commerce sites (e.g. Cloudflare) where one transport sometimes succeeds.
+ */
+export async function fetchHtmlWithRobustTransport(
+  targetUrl: string,
+  appOrigin?: string
+): Promise<{ html: string; transport: HtmlFetchTransport }> {
+  const errors: string[] = [];
+
+  try {
+    const html = await fetchHtml(targetUrl, appOrigin);
+    return { html, transport: appOrigin ? 'proxy' : 'direct' };
+  } catch (e) {
+    errors.push(e instanceof Error ? e.message : String(e));
+  }
+
+  if (appOrigin) {
+    try {
+      console.warn('[GEO_FETCH] transport fallback: direct (proxy failed)', { targetUrl });
+      const html = await fetchHtml(targetUrl, undefined);
+      return { html, transport: 'direct' };
+    } catch (e) {
+      errors.push(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  try {
+    console.warn('[GEO_FETCH] transport fallback: headless', { targetUrl });
+    const html = await fetchHtmlViaHeadless(targetUrl);
+    return { html, transport: 'headless' };
+  } catch (e) {
+    errors.push(e instanceof Error ? e.message : String(e));
+    throw new Error(`Failed to fetch ${targetUrl}: ${errors.join(' | ')}`);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -139,6 +179,8 @@ export type FetchHtmlForAnalysisResult = {
   usedFetchUrl: string;
   naverUsedPcFallback: boolean;
   naverMobileUsedHeadless: boolean;
+  /** Set when non-Naver path used {@link fetchHtmlWithRobustTransport}. */
+  fetchTransport?: HtmlFetchTransport;
 };
 
 /**
@@ -296,7 +338,7 @@ export async function fetchHtmlWithNaverFallback(
     parseNaverBlogPostFromUrlString(normalizedUrl) ?? parseNaverBlogPostFromUrlString(inputUrl.trim());
 
   if (!parsed) {
-    const html = await fetchHtml(normalizedUrl, appOrigin);
+    const { html, transport } = await fetchHtmlWithRobustTransport(normalizedUrl, appOrigin);
     console.log(
       '[GEO_FETCH_SUMMARY]',
       JSON.stringify({
@@ -304,6 +346,7 @@ export async function fetchHtmlWithNaverFallback(
         analysisFetchTargetUrl: normalizedUrl,
         naver_used_pc_fallback: false,
         naver_mobile_used_headless: false,
+        fetch_transport: transport,
       })
     );
     return {
@@ -311,6 +354,7 @@ export async function fetchHtmlWithNaverFallback(
       usedFetchUrl: normalizedUrl,
       naverUsedPcFallback: false,
       naverMobileUsedHeadless: false,
+      fetchTransport: transport,
     };
   }
 

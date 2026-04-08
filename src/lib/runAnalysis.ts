@@ -1,5 +1,5 @@
 import { fetchHtml, extractMetaAndContent } from './htmlAnalyzer';
-import { fetchHtmlWithNaverFallback } from './fetchHtmlForAnalysis';
+import { fetchHtmlWithNaverFallback, type HtmlFetchTransport } from './fetchHtmlForAnalysis';
 import { normalizeUrl, sanitizeIncomingAnalyzeUrl } from './normalizeUrl';
 import { runGeminiVideoAnalysis, buildYouTubeAnalysisResult, VideoAnalysisQuotaSkipError, type GeminiVideoAnalysisResult } from './geminiVideoAnalysis';
 import {
@@ -474,6 +474,7 @@ async function runAnalysisImpl(
     let serverFetchTargetUrl: string;
     let naverFetchUsedPcFallback = false;
     let naverMobileFetchUsedHeadless = false;
+    let nonNaverFetchTransport: HtmlFetchTransport | undefined;
     let extractionSource: 'server' | 'headless' = 'server';
     {
       const fetched = await fetchHtmlWithNaverFallback(inputUrl, normalizedUrl, appOrigin);
@@ -481,6 +482,7 @@ async function runAnalysisImpl(
       serverFetchTargetUrl = fetched.usedFetchUrl;
       naverFetchUsedPcFallback = fetched.naverUsedPcFallback;
       naverMobileFetchUsedHeadless = fetched.naverMobileUsedHeadless;
+      nonNaverFetchTransport = fetched.fetchTransport;
     }
     const analysisFetchWarning: string | null = naverFetchUsedPcFallback
       ? '모바일(m.blog)에서 본문을 가져오지 못해 PC/PostView URL로 분석했습니다. m.blog URL로 직접 열 때와 점수·지표가 달라질 수 있습니다.'
@@ -488,7 +490,12 @@ async function runAnalysisImpl(
     const preMetrics = computeExtractionMetrics(html);
     const skipDuplicateNaverHeadless =
       naverMobileFetchUsedHeadless && /(^|\.)m\.blog\.naver\.com$/i.test(analysisHostFromUrl);
-    if (!skipDuplicateNaverHeadless && shouldAttemptHeadlessFetch(analysisHostFromUrl, preMetrics)) {
+    const skipDuplicateRobustHeadless = nonNaverFetchTransport === 'headless';
+    if (
+      !skipDuplicateNaverHeadless &&
+      !skipDuplicateRobustHeadless &&
+      shouldAttemptHeadlessFetch(analysisHostFromUrl, preMetrics)
+    ) {
       try {
         const htmlH = await fetchHtmlViaHeadless(serverFetchTargetUrl);
         const postMetrics = computeExtractionMetrics(htmlH);

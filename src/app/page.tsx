@@ -49,6 +49,36 @@ function postAnalyzeRequest(targetUrl: string, forceRefresh: boolean) {
   });
 }
 
+/**
+ * Preview uses /api/proxy so golden highlights can inject scripts. If upstream blocks the proxy (502),
+ * fall back to loading the target URL directly in the iframe (user's browser may still render the page).
+ */
+async function resolvePreviewIframeSrc(
+  canonical: string,
+  golden: string,
+  reasons: string
+): Promise<{ src: string; usedDirectFallback: boolean }> {
+  const embedUrl = toEmbedUrl(canonical);
+  if (embedUrl) {
+    return { src: embedUrl, usedDirectFallback: false };
+  }
+  const proxyUrl = `/api/proxy?url=${encodeURIComponent(canonical)}`;
+  const params = new URLSearchParams();
+  if (golden) params.set("golden", golden);
+  if (reasons) params.set("reasons", reasons);
+  const fullProxy = params.toString() ? `${proxyUrl}&${params.toString()}` : proxyUrl;
+
+  try {
+    const res = await fetch(fullProxy, { method: "GET", cache: "no-store" });
+    if (res.ok) {
+      return { src: fullProxy, usedDirectFallback: false };
+    }
+  } catch {
+    /* network failure — try direct */
+  }
+  return { src: canonical, usedDirectFallback: true };
+}
+
 export default function Home() {
   const [url, setUrl] = useState(getInitialUrlSanitized);
   const [status, setStatus] = useState<Status>("idle");
@@ -71,6 +101,8 @@ export default function Home() {
   } | null>(null);
 
   const [iframeSrc, setIframeSrc] = useState<string>("");
+  /** True when /api/proxy returned an error and iframe loads the target site directly. */
+  const [iframeDirectFallback, setIframeDirectFallback] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const currentAnalyzedUrlRef = useRef<string>("");
@@ -159,6 +191,7 @@ export default function Home() {
     setPassedChecks([]);
     setActiveIssueId(null);
     setAnalyzeMeta(null);
+    setIframeDirectFallback(false);
 
     const stepInterval = setInterval(() => {
       setLoadingStep((prev) => {
@@ -193,17 +226,9 @@ export default function Home() {
         .slice(0, 3);
       const golden = topChunks.map((c: { index: number }) => c.index).join(",");
       const reasons = topChunks.map((c: { reason?: string }) => c.reason ?? "AI 분석 기반 고품질 문단").join("||");
-      const embedUrl = toEmbedUrl(canonical);
-      const iframeSrc = embedUrl
-        ? embedUrl
-        : (() => {
-            const proxyUrl = `/api/proxy?url=${encodeURIComponent(canonical)}`;
-            const params = new URLSearchParams();
-            if (golden) params.set("golden", golden);
-            if (reasons) params.set("reasons", reasons);
-            return params.toString() ? `${proxyUrl}&${params.toString()}` : proxyUrl;
-          })();
-      setIframeSrc(iframeSrc);
+      const { src: previewSrc, usedDirectFallback } = await resolvePreviewIframeSrc(canonical, golden, reasons);
+      setIframeSrc(previewSrc);
+      setIframeDirectFallback(usedDirectFallback);
       setStatus("success");
       setUrl(canonical);
       currentAnalyzedUrlRef.current = canonical;
@@ -234,7 +259,7 @@ export default function Home() {
       if (!res.ok) return;
 
       const data = await res.json();
-      const resResult = data.result;
+      const resResult = data.result as AnalysisResult;
       setResult({ ...resResult, url: canonical });
       setAnalyzeMeta({
         fromCache: Boolean(data.fromCache),
@@ -242,8 +267,15 @@ export default function Home() {
       });
       setUrl(canonical);
 
-      const embed = toEmbedUrl(canonical);
-      if (embed) setIframeSrc(embed);
+      const topChunks = (resResult.chunkCitations ?? [])
+        .slice()
+        .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
+        .slice(0, 3);
+      const golden = topChunks.map((c: { index: number }) => c.index).join(",");
+      const reasons = topChunks.map((c: { reason?: string }) => c.reason ?? "AI 분석 기반 고품질 문단").join("||");
+      const { src: previewSrc, usedDirectFallback } = await resolvePreviewIframeSrc(canonical, golden, reasons);
+      setIframeSrc(previewSrc);
+      setIframeDirectFallback(usedDirectFallback);
 
       const browserUrl = new URL(window.location.href);
       browserUrl.searchParams.set("url", canonical);
@@ -290,6 +322,7 @@ export default function Home() {
     setActiveIssueId(null);
     setIframeScrollTop(0);
     setIframeSrc("");
+    setIframeDirectFallback(false);
     setPassedChecks([]);
     setPlatformConstraints(undefined);
     setAnalyzeMeta(null);
@@ -468,6 +501,21 @@ export default function Home() {
                   {videoDescriptionSnippet.length > 200 ? "…" : ""}
                 </div>
               )}
+            </div>
+          )}
+          {iframeDirectFallback && (
+            <div
+              style={{
+                flexShrink: 0,
+                padding: "8px 12px",
+                background: "rgba(251, 191, 36, 0.12)",
+                borderBottom: "1px solid rgba(251, 191, 36, 0.35)",
+                fontSize: 11,
+                color: "#e2e8f0",
+                lineHeight: 1.45,
+              }}
+            >
+              프리뷰: 서버 프록시가 해당 URL에서 HTML을 가져오지 못해 <strong style={{ color: "#fbbf24" }}>원본 페이지를 직접</strong> 불러옵니다. 일부 쇼핑몰은 iframe 표시를 막을 수 있습니다. 문단 하이라이트는 프록시 경로에서만 동작합니다.
             </div>
           )}
           {/* iframe */}

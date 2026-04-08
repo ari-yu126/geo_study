@@ -309,15 +309,21 @@ export async function POST(req: Request) {
       },
       { status: 200 }
     );
-  } catch (err: any) {
-    console.error('analyze API error:', err);
-    const detail = err?.message ?? String(err);
+  } catch (err: unknown) {
+    console.error('[analyze] failed:', err);
+    const detail = err instanceof Error ? err.message : String(err);
+    const fetchFailed =
+      /^(Failed to fetch|Fetch failed)/i.test(detail) ||
+      /\b(ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|network|aborted|socket)/i.test(
+        detail
+      );
+
     return NextResponse.json(
       {
-        error: '분석 중 오류가 발생했습니다.',
-        detail: process.env.NODE_ENV === 'development' ? detail : undefined,
+        error: fetchFailed ? 'Fetch failed' : '분석 중 오류가 발생했습니다.',
+        detail,
       },
-      { status: 500 }
+      { status: fetchFailed ? 502 : 500 }
     );
   }
 }
