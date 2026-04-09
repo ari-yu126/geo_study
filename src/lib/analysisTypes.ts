@@ -205,7 +205,14 @@ export interface LlmCallStatus {
 
 /** Internal trace for deterministic recommendations (explainability / debugging). */
 export interface GeoRecommendationTraceEntry {
-  target: 'trendSummary' | 'contentGapSummary' | 'heading' | 'block' | 'priorityNote' | 'predictedQuestions';
+  target:
+    | 'trendSummary'
+    | 'contentGapSummary'
+    | 'heading'
+    | 'block'
+    | 'priorityNote'
+    | 'predictedQuestions'
+    | 'guideRule';
   /** Stable refs: issue:<id>, opportunity:<id>, axis:<name>, rule:<id>, signal:<name> */
   sources: string[];
   index?: number;
@@ -234,6 +241,43 @@ export interface GeoRecommendations {
   isTemplateFallback?: boolean;
   /** Deterministic engine: why headings/blocks/summaries were emitted */
   trace?: GeoRecommendationTrace;
+  /** Optional: config-driven guideRules merge (deterministic; no LLM). */
+  guideGenerationDebug?: GuideGenerationDebug;
+}
+
+/** Monthly GEO profile: content improvement guide lines triggered by issue/strength ids. */
+export interface GuideRule {
+  id: string;
+  /** Issue ids and/or strength (passed) ids that activate this guide when present in the current run. */
+  basedOn: string[];
+  message: string;
+  priority?: 'high' | 'medium' | 'low';
+  /** Optional extra priority lines (editorial: merged after `message`, config-first). */
+  priorityNotes?: string[];
+  /** Optional H2/H3 suggestions (editorial: primary; engine fills gaps). */
+  suggestedHeadings?: string[];
+  /** Optional block hints (editorial: primary; engine fills gaps). */
+  suggestedBlocks?: string[];
+}
+
+/** Snapshot of matched config guide rules (for client / AI Writing Assistant context). */
+export interface MatchedGuideRuleSnapshot {
+  id: string;
+  message: string;
+  priority?: 'high' | 'medium' | 'low';
+}
+
+export interface GuideGenerationDebug {
+  source: 'config' | 'fallback' | 'mixed';
+  matchedRuleIds: string[];
+  /** Full rule text for matched ids — used when sending guide-first AI example requests. */
+  matchedGuideRules?: MatchedGuideRuleSnapshot[];
+  /** Which actionPlan fields received non-empty config-driven content (editorial rich merge). */
+  appliedFields?: {
+    priorityNotes: boolean;
+    suggestedHeadings: boolean;
+    suggestedBlocks: boolean;
+  };
 }
 
 /**
@@ -413,6 +457,37 @@ export interface GeoOpportunity {
   sourceRefs: GeoOpportunitySourceRefs;
 }
 
+/**
+ * Optional editorial-only strength lines in `profiles.editorial` (monthly GEO config).
+ * Evaluated via `evaluateCheck` using the same DSL as `passedRules`.
+ */
+export interface StrengthRule {
+  id: string;
+  label: string;
+  description: string;
+  reason: string;
+  axis: GeoAxis;
+  /** evaluateCheck identifier. JSON may use `condition` as an alias. */
+  check?: string;
+  condition?: string;
+  threshold?: number;
+  priority?: string;
+}
+
+/** Debug: how editorial strengths were assembled (non-breaking, optional on GeoExplain). */
+export interface StrengthGenerationDebug {
+  source: 'config' | 'fallback' | 'mixed';
+  matchedRuleIds: string[];
+}
+
+/** Debug: issue rule resolution (optional on GeoExplain). */
+export interface IssueGenerationDebug {
+  source: 'profile' | 'root' | 'fallback' | 'mixed';
+  /** Geo issue ids from non–axis_weak rules (rule-layer + custom profile rules) */
+  matchedRuleIds: string[];
+  pageType: string;
+}
+
 /** Monthly config: declarative passed signals (optional) */
 export interface PassedRule {
   id: string;
@@ -440,6 +515,10 @@ export interface GeoExplain {
   issues: GeoIssue[];
   passed: GeoPassedItem[];
   opportunities: GeoOpportunity[];
+  /** Optional: editorial strength generation diagnostics */
+  strengthGenerationDebug?: StrengthGenerationDebug;
+  /** Optional: issue rule resolution diagnostics */
+  issueGenerationDebug?: IssueGenerationDebug;
 }
 
 export interface FixExample {
@@ -507,13 +586,18 @@ export interface ScoringRule {
 
 export interface IssueRule {
   id: string;
-  check: string;
+  /** evaluateCheck DSL; JSON may use `condition` as an alias */
+  check?: string;
+  condition?: string;
   threshold?: number;
   label: string;
   description: string;
   priority: AuditPriority;
   targetSelector: string;
   targetIndex: number;
+  /** When id is not in built-in meta maps, set explicitly */
+  axis?: GeoAxis;
+  category?: GeoIssueCategory;
 }
 
 /** 유튜브 전용 잘된 점(PassedCheck) 기준 — 월별 GEO 업데이트에 포함 */
@@ -600,6 +684,10 @@ export interface GeoScoringProfile {
   issueRules: IssueRule[];
   /** Tavily 질문 수집용 템플릿. {keyword}를 시드 키워드로 치환 */
   queryTemplates: string[];
+  /** Editorial-only: config-driven strengths (optional; falls back to engine defaults) */
+  strengthRules?: StrengthRule[];
+  /** Optional: config-driven content improvement guide lines (issue/strength id triggers). */
+  guideRules?: GuideRule[];
 }
 
 /** Signals for blog/editorial answerability profile only (see editorialBlogAnswerability.ts) */

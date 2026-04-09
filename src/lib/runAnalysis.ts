@@ -310,6 +310,7 @@ async function runAnalysisImpl(
           pageType: 'video',
           geoOpportunities: opportunities,
           geoIssues,
+          geoPassedIds: geoPassedItems.map((p) => p.id),
           axisScores: coreResult.axisScores,
           meta: {
             title: meta.title,
@@ -437,6 +438,7 @@ async function runAnalysisImpl(
         pageType: 'video',
         geoOpportunities: oppsFb,
         geoIssues: geoIssuesFb,
+        geoPassedIds: geoPassedFb.map((p) => p.id),
         axisScores: coreResult.axisScores,
         meta: {
           title: meta.title,
@@ -1271,6 +1273,8 @@ async function runAnalysisImpl(
       opportunities,
       platformConstraints,
       weakBlogFallbackApplied,
+      strengthGenerationDebug,
+      issueGenerationDebug,
     } = auditWeb;
 
     if (platform === 'naver_blog' && pageType === 'editorial') {
@@ -1311,6 +1315,8 @@ async function runAnalysisImpl(
       issues: geoIssues,
       passed: geoPassedItems,
       opportunities,
+      ...(strengthGenerationDebug ? { strengthGenerationDebug } : {}),
+      ...(issueGenerationDebug ? { issueGenerationDebug } : {}),
     };
     logGeoExplainDebug(url, coreResult.pageType, geoExplainWeb, {
       editorialSubtype: coreResult.editorialSubtype,
@@ -1325,6 +1331,7 @@ async function runAnalysisImpl(
       editorialSubtype: coreResult.editorialSubtype,
       geoOpportunities: opportunities,
       geoIssues,
+      geoPassedIds: geoPassedItems.map((p) => p.id),
       axisScores: coreResult.axisScores,
       meta: coreResult.meta,
       textSample: effectiveContentText.slice(0, 4000),

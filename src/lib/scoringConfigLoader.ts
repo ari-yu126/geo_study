@@ -1,6 +1,6 @@
 import { supabase, isSupabaseReachable } from './supabase';
 import { DEFAULT_SCORING_CONFIG } from './defaultScoringConfig';
-import type { GeoScoringConfig, GeoScoringProfile, PageType } from './analysisTypes';
+import type { GeoScoringConfig, GeoScoringProfile, IssueRule, PageType } from './analysisTypes';
 
 /** pageType에 따라 활성 프로필 반환. profiles 없으면 null */
 export function getProfileForPageType(
@@ -10,6 +10,42 @@ export function getProfileForPageType(
   const profiles = config.profiles;
   if (!profiles) return null;
   return profiles[pageType] ?? profiles.default ?? null;
+}
+
+export type IssueRulesResolutionSource = 'profile' | 'root' | 'fallback';
+
+export type IssueRulesResolution = {
+  rules: IssueRule[];
+  source: IssueRulesResolutionSource;
+  /** profiles[pageType].issueRules ids when source === profile — slot ownership for axis defaults */
+  profileOwnedRuleIds: string[];
+};
+
+/**
+ * Issue rules for the active page type: profile first, then root config, then code defaults.
+ */
+export function resolveIssueRulesForPageType(
+  config: GeoScoringConfig,
+  pageType: PageType
+): IssueRulesResolution {
+  const profile = getProfileForPageType(config, pageType);
+  const fromProfile = profile?.issueRules;
+  if (fromProfile && fromProfile.length > 0) {
+    return {
+      rules: fromProfile,
+      source: 'profile',
+      profileOwnedRuleIds: fromProfile.map((r) => r.id),
+    };
+  }
+  const root = config.issueRules;
+  if (root && root.length > 0) {
+    return { rules: root, source: 'root', profileOwnedRuleIds: [] };
+  }
+  return {
+    rules: DEFAULT_SCORING_CONFIG.issueRules,
+    source: 'fallback',
+    profileOwnedRuleIds: [],
+  };
 }
 
 const CACHE_TTL_MS = 5 * 60 * 1000;

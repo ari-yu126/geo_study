@@ -16,6 +16,7 @@ import type {
   GeoOpportunity,
 } from './analysisTypes';
 import { buildGeoRecommendationsFromSignals } from './recommendations/buildGeoRecommendations';
+import { filterRecommendationsByPageType } from './recommendations/filterRecommendationsByPageType';
 import { toRecommendationContext } from './recommendations/legacyAdapter';
 
 function guessAuditAxis(a: AuditIssue): GeoAxis {
@@ -97,6 +98,6 @@ export function generateTemplateRecommendations(
     hasReviewSchema: false,
     limitedAnalysis: false,
   });
-  const result = buildGeoRecommendationsFromSignals(ctx);
+  const result = filterRecommendationsByPageType(buildGeoRecommendationsFromSignals(ctx), ctx.pageType);
   return { ...result, isTemplateFallback: true };
 }

@@ -148,7 +148,10 @@ export async function runEditorialIssueEngine(
   const axisScores = result.axisScores ?? buildAxisScores(result);
   const pageType = (result.pageType as PageType) ?? 'editorial';
   const axesFromRules = new Set(ruleLayer.ruleFailures.map((i) => i.axis));
-  const axisIssues = axisThresholdIssues(axisScores, pageType, axesFromRules);
+  const profileOwned = new Set(ruleLayer.profileOwnedRuleIds);
+  const axisIssues = axisThresholdIssues(axisScores, pageType, axesFromRules).filter(
+    (i) => !profileOwned.has(i.id)
+  );
 
   let failures = [...ruleLayer.ruleFailures, ...axisIssues];
 

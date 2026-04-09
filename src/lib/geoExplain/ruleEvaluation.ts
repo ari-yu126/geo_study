@@ -1,10 +1,16 @@
 import { evaluateCheck } from '../checkEvaluator';
 import { DEFAULT_SCORING_CONFIG } from '../defaultScoringConfig';
-import { loadActiveScoringConfig } from '../scoringConfigLoader';
+import {
+  loadActiveScoringConfig,
+  resolveIssueRulesForPageType,
+  type IssueRulesResolutionSource,
+} from '../scoringConfigLoader';
 import { isYouTubeUrl } from '../youtubeMetadataExtractor';
 import type {
   AnalysisResult,
   GeoIssue,
+  GeoIssueCategory,
+  GeoAxis,
   GeoPassedItem,
   IssueRule,
   PageType,
@@ -38,11 +44,29 @@ function isYouTubeResult(result: AnalysisResult): boolean {
 export interface GeoRuleLayerResult {
   ruleFailures: GeoIssue[];
   rulePasses: GeoPassedItem[];
+  /** Rules evaluated for this page (after commerce filter). Use for audit mapping / positions. */
+  auditIssueRules: IssueRule[];
+  /** @deprecated same as auditIssueRules */
   rulesSource: IssueRule[];
   rulesSourceLabel: 'config' | 'default';
+  issueRulesResolutionSource: IssueRulesResolutionSource;
+  profileOwnedRuleIds: string[];
   issueRulesToUse: IssueRule[];
   ytAllowResolved: { ids: string[]; source: 'config' | 'default' };
   skipTextOnlyRules: boolean;
+}
+
+function issueRuleCheckName(rule: IssueRule): string | null {
+  const c = rule.check ?? rule.condition;
+  if (typeof c === 'string' && c.trim()) return c.trim();
+  return null;
+}
+
+function issueRuleGeoMeta(rule: IssueRule): { axis: GeoAxis; category: GeoIssueCategory } {
+  if (rule.axis && rule.category) return { axis: rule.axis, category: rule.category };
+  if (rule.axis)
+    return { axis: rule.axis, category: resolveIssueRuleMeta(rule.id).category };
+  return resolveIssueRuleMeta(rule.id);
 }
 
 /**
@@ -55,10 +79,12 @@ export async function runGeoRuleLayer(
   const features = buildPageFeaturesFromResult(result);
   const skipTextOnlyRules = isYouTubeResult(result);
 
+  const pageType = (result.pageType as PageType) ?? 'editorial';
+  const resolution = resolveIssueRulesForPageType(config, pageType);
   const rulesSourceLabel: 'config' | 'default' =
-    config.issueRules && config.issueRules.length > 0 ? 'config' : 'default';
-  const rulesSource =
-    rulesSourceLabel === 'config' ? config.issueRules! : DEFAULT_SCORING_CONFIG.issueRules;
+    resolution.source === 'fallback' ? 'default' : 'config';
+  const rulesSource = resolution.rules;
+  const profileOwnedRuleIds = resolution.profileOwnedRuleIds;
 
   const ytAllowResolved = resolveYoutubeAllowedIssueIds(config);
   const quotablePassed = evaluateCheck(
@@ -69,7 +95,6 @@ export async function runGeoRuleLayer(
 
   let issueRulesToUse = rulesSource;
   try {
-    const pageType = (result.pageType as PageType) ?? undefined;
     if (pageType === 'commerce') {
       const editorialRuleIdsToSkip = new Set([
         'content_short',
@@ -97,10 +122,15 @@ export async function runGeoRuleLayer(
     if (skipTextOnlyRules) {
       if (!ytAllowResolved.ids.includes(rule.id)) continue;
     }
-    const passed = evaluateCheck(rule.check, features, rule.threshold);
+    const checkName = issueRuleCheckName(rule);
+    if (!checkName) {
+      console.warn('[runGeoRuleLayer] issueRule missing check/condition:', rule.id);
+      continue;
+    }
+    const passed = evaluateCheck(checkName, features, rule.threshold);
     if (!passed) {
       if (rule.id === 'content_short' && quotablePassed) continue;
-      const meta = resolveIssueRuleMeta(rule.id);
+      const meta = issueRuleGeoMeta(rule);
       ruleFailures.push({
         id: rule.id,
         category: meta.category,
@@ -112,7 +142,7 @@ export async function runGeoRuleLayer(
         sourceRefs: {
           ruleId: rule.id,
           axisScoreAtEmit: axisSnapshot,
-          checkExpression: rule.check,
+          checkExpression: checkName,
         },
       });
     } else {
@@ -133,8 +163,11 @@ export async function runGeoRuleLayer(
   return {
     ruleFailures,
     rulePasses,
-    rulesSource,
+    auditIssueRules: issueRulesToUse,
+    rulesSource: issueRulesToUse,
     rulesSourceLabel,
+    issueRulesResolutionSource: resolution.source,
+    profileOwnedRuleIds,
     issueRulesToUse,
     ytAllowResolved,
     skipTextOnlyRules,

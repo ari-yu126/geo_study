@@ -4,6 +4,7 @@
  */
 
 import { buildGeoRecommendationsFromSignals } from '../src/lib/recommendations/buildGeoRecommendations';
+import { filterRecommendationsByPageType } from '../src/lib/recommendations/filterRecommendationsByPageType';
 import { RECOMMENDATION_SNAPSHOT_FIXTURES } from './recommendation-snapshot-fixtures';
 
 function flattenTraceSources(rec: { trace?: { entries?: { sources: string[] }[] } }): string[] {
@@ -14,7 +15,10 @@ function flattenTraceSources(rec: { trace?: { entries?: { sources: string[] }[] 
 let failed = false;
 
 for (const fx of RECOMMENDATION_SNAPSHOT_FIXTURES) {
-  const out = buildGeoRecommendationsFromSignals(fx.context);
+  const out = filterRecommendationsByPageType(
+    buildGeoRecommendationsFromSignals(fx.context),
+    fx.context.pageType
+  );
   const combined = `${out.trendSummary} ${out.contentGapSummary}`;
   for (const sub of fx.expectTrendOrGapSubstrings) {
     if (!combined.includes(sub)) {

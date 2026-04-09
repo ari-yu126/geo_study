@@ -1,4 +1,4 @@
-import { loadActiveScoringConfig } from './scoringConfigLoader';
+import { loadActiveScoringConfig, resolveIssueRulesForPageType } from './scoringConfigLoader';
 import { DEFAULT_SCORING_CONFIG } from './defaultScoringConfig';
 import {
   runEditorialIssueEngine,
@@ -11,6 +11,7 @@ import {
   resolvePrimaryGeoIssues,
   resolvePrimaryGeoPassed,
 } from './geoExplain';
+import type { GeoRuleLayerResult } from './geoExplain';
 import { dedupeGeoIssuesById } from './geoExplain/issueEngine';
 import type {
   AnalysisResult,
@@ -21,8 +22,11 @@ import type {
   GeoPassedItem,
   IframePositionData,
   IssueRule,
+  IssueGenerationDebug,
+  PageType,
   PassedCheck,
   PlatformConstraint,
+  StrengthGenerationDebug,
 } from './analysisTypes';
 import {
   filterNaverBlogGeoPassed,
@@ -41,6 +45,10 @@ export interface AuditResults {
   platformConstraints?: PlatformConstraint[];
   /** Editorial + naver_blog: injected `blog_low_info_density` fallback */
   weakBlogFallbackApplied?: boolean;
+  /** Editorial: optional diagnostics for config-driven strengths */
+  strengthGenerationDebug?: StrengthGenerationDebug;
+  /** Issue rule resolution diagnostics */
+  issueGenerationDebug?: IssueGenerationDebug;
 }
 
 /** Synthetic audit rows (no row in monthly issueRules). */
@@ -542,29 +550,38 @@ export async function deriveAuditIssues(
   result: AnalysisResult,
   positionData?: IframePositionData
 ): Promise<AuditResults> {
+  let strengthGenerationDebug: StrengthGenerationDebug | undefined;
+  let issueGenerationDebug: IssueGenerationDebug | undefined;
   const config = await loadActiveScoringConfig();
-  const rulesSourceLabel: 'config' | 'default' =
-    config.issueRules && config.issueRules.length > 0 ? 'config' : 'default';
-  const rulesSource =
-    rulesSourceLabel === 'config' ? config.issueRules! : DEFAULT_SCORING_CONFIG.issueRules;
+  const pageTypeKey = (result.pageType ?? 'editorial') as PageType;
 
+  let rulesSource: IssueRule[];
+  let rulesSourceLabel: 'config' | 'default';
   let geoIssues: GeoIssue[];
   let geoPassed: GeoPassedItem[];
   let skipTextOnlyRules: boolean;
   let ytAllowResolved: { ids: string[]; source: 'config' | 'default' };
   let issueRulesToUseLen: number;
+  let ruleLayer: GeoRuleLayerResult | undefined;
 
   // Video pipeline only: web/editorial results also set `auditIssues` from rule engines — must not use YouTube mappers.
   if (result.pageType === 'video') {
+    const issueRes = resolveIssueRulesForPageType(config, 'video');
+    rulesSource = issueRes.rules;
+    rulesSourceLabel = issueRes.source === 'fallback' ? 'default' : 'config';
     geoIssues = runYoutubeIssueEngine(result);
     geoPassed = await runYoutubePassedEngine(result);
     skipTextOnlyRules = false;
     ytAllowResolved = { ids: [], source: 'default' };
-    issueRulesToUseLen = rulesSource.length;
+    issueRulesToUseLen = issueRes.rules.length;
   } else {
-    const ruleLayer = await runGeoRuleLayer(result);
+    ruleLayer = await runGeoRuleLayer(result);
+    rulesSource = ruleLayer.auditIssueRules;
+    rulesSourceLabel = ruleLayer.rulesSourceLabel;
     geoIssues = await runEditorialIssueEngine(result, ruleLayer);
-    geoPassed = await runEditorialPassedEngine(result, ruleLayer);
+    const editorialPassed = await runEditorialPassedEngine(result, ruleLayer);
+    geoPassed = editorialPassed.items;
+    strengthGenerationDebug = editorialPassed.strengthGenerationDebug;
     skipTextOnlyRules = ruleLayer.skipTextOnlyRules;
     ytAllowResolved = ruleLayer.ytAllowResolved;
     issueRulesToUseLen = ruleLayer.issueRulesToUse.length;
@@ -599,6 +616,26 @@ export async function deriveAuditIssues(
   let opportunities = runOpportunityEngine(result, workingGeoIssues, config);
   if (result.platform === 'naver_blog') {
     opportunities = filterNaverBlogOpportunities(opportunities);
+  }
+
+  {
+    const matchedRuleIds = workingGeoIssues
+      .filter((g) => !g.id.startsWith('axis_weak'))
+      .map((g) => g.id);
+    const hasAxisWeak = workingGeoIssues.some((g) => g.id.startsWith('axis_weak'));
+    const resSrc =
+      ruleLayer?.issueRulesResolutionSource ??
+      resolveIssueRulesForPageType(config, pageTypeKey).source;
+    let src: IssueGenerationDebug['source'];
+    if ((resSrc === 'profile' || resSrc === 'root') && hasAxisWeak) src = 'mixed';
+    else if (resSrc === 'profile') src = 'profile';
+    else if (resSrc === 'root') src = 'root';
+    else src = 'fallback';
+    issueGenerationDebug = {
+      source: src,
+      matchedRuleIds,
+      pageType: String(result.pageType ?? 'editorial'),
+    };
   }
 
   const issues = geoIssuesToAuditIssues(workingGeoIssues, result, rulesSource);
@@ -658,5 +695,7 @@ export async function deriveAuditIssues(
     opportunities,
     platformConstraints,
     ...(weakBlogFallbackApplied ? { weakBlogFallbackApplied: true } : {}),
+    ...(strengthGenerationDebug ? { strengthGenerationDebug } : {}),
+    ...(issueGenerationDebug ? { issueGenerationDebug } : {}),
   };
 }

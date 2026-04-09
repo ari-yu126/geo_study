@@ -13,8 +13,8 @@ type Entry = { savedAt: number; payload: Extract<AiWritingExamplesApiResponse, {
 
 const store = new Map<string, Entry>();
 
-function cacheKey(url: string, pageType: string, locale: string): string {
-  return `${normalizeUrl(url)}::${pageType}::${locale}`;
+function cacheKey(url: string, pageType: string, locale: string, guideSig: string): string {
+  return `${normalizeUrl(url)}::${pageType}::${locale}::${guideSig}`;
 }
 
 function pruneIfNeeded(): void {
@@ -29,9 +29,10 @@ function pruneIfNeeded(): void {
 export function getCachedAiWritingExamples(
   url: string,
   pageType: string,
-  locale: 'ko' | 'en'
+  locale: 'ko' | 'en',
+  guideSig: string
 ): Extract<AiWritingExamplesApiResponse, { aiAvailable: true }> | null {
-  const key = cacheKey(url, pageType, locale);
+  const key = cacheKey(url, pageType, locale, guideSig);
   const row = store.get(key);
   if (!row) return null;
   if (Date.now() - row.savedAt > TTL_MS) {
@@ -46,9 +47,10 @@ export function setCachedAiWritingExamples(
   url: string,
   pageType: string,
   locale: 'ko' | 'en',
+  guideSig: string,
   payload: Extract<AiWritingExamplesApiResponse, { aiAvailable: true }>
 ): void {
-  const key = cacheKey(url, pageType, locale);
+  const key = cacheKey(url, pageType, locale, guideSig);
   store.set(key, { savedAt: Date.now(), payload });
   pruneIfNeeded();
 }

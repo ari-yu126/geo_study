@@ -1,6 +1,6 @@
 import { evaluateCheck } from '../checkEvaluator';
 import { DEFAULT_SCORING_CONFIG } from '../defaultScoringConfig';
-import { loadActiveScoringConfig } from '../scoringConfigLoader';
+import { getProfileForPageType, loadActiveScoringConfig } from '../scoringConfigLoader';
 import { isYouTubeUrl } from '../youtubeMetadataExtractor';
 import type {
   AnalysisResult,
@@ -9,6 +9,8 @@ import type {
   GeoPassedItem,
   PageType,
   PassedRule,
+  StrengthGenerationDebug,
+  StrengthRule,
 } from '../analysisTypes';
 import { buildAxisScores } from './axisScores';
 import { buildPageFeaturesFromResult } from './buildPageFeatures';
@@ -189,19 +191,149 @@ function monthlyPassedRulesItems(
   return out;
 }
 
+function strengthRuleCheckName(r: StrengthRule): string | null {
+  const c = r.check ?? r.condition;
+  if (typeof c === 'string' && c.trim()) return c.trim();
+  return null;
+}
+
+/**
+ * Legacy editorial "geo_*" strengths when profile.strengthRules does not override an id.
+ */
+function buildDefaultEditorialGeoStrengthItems(
+  features: ReturnType<typeof buildPageFeaturesFromResult>,
+  result: AnalysisResult,
+  axisScores: GeoAxisScores | undefined,
+  skipIds: Set<string>
+): GeoPassedItem[] {
+  const geoPassed: GeoPassedItem[] = [];
+  if (!skipIds.has('geo_first_summary') && evaluateCheck('first_paragraph_quality', features, 40)) {
+    geoPassed.push({
+      id: 'geo_first_summary',
+      axis: 'answerability',
+      label: '강력한 요약/결론 존재',
+      description: '도입부 요약 신호가 있습니다.',
+      reason: '도입부에 요약 또는 결론이 있어 AI가 빠르게 인용할 수 있습니다.',
+      sourceRefs: { axisScoreAtEmit: axisScores, ruleId: 'geo_first_summary' },
+    });
+  }
+  if (!skipIds.has('geo_quotable') && evaluateCheck('quotable_sentences_min', features, 3)) {
+    geoPassed.push({
+      id: 'geo_quotable',
+      axis: 'citation',
+      label: '인용 가능한 문장 다수',
+      description: '인용 후보 문장이 충분합니다.',
+      reason: '수치·팩트 기반의 짧은 문장이 있어 AI 인용 확률이 높습니다.',
+      sourceRefs: { axisScoreAtEmit: axisScores, ruleId: 'geo_quotable' },
+    });
+  }
+  if (!skipIds.has('geo_list_structure') && evaluateCheck('lists_min', features, 1)) {
+    geoPassed.push({
+      id: 'geo_list_structure',
+      axis: 'answerability',
+      label: '목록 구조 활용',
+      description: '목록 구조가 있습니다.',
+      reason: '목록형 구조는 AI가 핵심을 추출하기에 용이합니다.',
+      sourceRefs: { axisScoreAtEmit: axisScores, ruleId: 'geo_list_structure' },
+    });
+  }
+  if (!skipIds.has('geo_comparison') && evaluateCheck('tables_min', features, 1)) {
+    geoPassed.push({
+      id: 'geo_comparison',
+      axis: 'answerability',
+      label: '비교 구조(테이블) 존재',
+      description: '테이블이 있습니다.',
+      reason: '비교 표는 구조화된 근거를 제공하여 AI 인용에 유리합니다.',
+      sourceRefs: { axisScoreAtEmit: axisScores, ruleId: 'geo_comparison' },
+    });
+  }
+  if (!skipIds.has('geo_topical_focus') && (features.seedKeywords ?? []).length >= 3) {
+    geoPassed.push({
+      id: 'geo_topical_focus',
+      axis: 'questionMatch',
+      label: '명확한 주제 초점',
+      description: '시드 키워드가 충분합니다.',
+      reason: '핵심 주제 토큰이 명확해 AI가 주제 중심으로 인용하기 쉽습니다.',
+      sourceRefs: { axisScoreAtEmit: axisScores, ruleId: 'geo_topical_focus' },
+    });
+  }
+  return geoPassed;
+}
+
+/**
+ * Evaluate `profiles.editorial.strengthRules` first; merge with defaults for ids not listed in config.
+ */
+function collectEditorialStrengthItemsFromConfig(
+  result: AnalysisResult,
+  features: ReturnType<typeof buildPageFeaturesFromResult>,
+  axisScores: GeoAxisScores | undefined,
+  config: Awaited<ReturnType<typeof loadActiveScoringConfig>>
+): { geoPassed: GeoPassedItem[]; strengthGenerationDebug: StrengthGenerationDebug } {
+  const profile = getProfileForPageType(config, 'editorial');
+  const strengthRules = profile?.strengthRules;
+
+  if (!strengthRules?.length) {
+    return {
+      geoPassed: buildDefaultEditorialGeoStrengthItems(features, result, axisScores, new Set()),
+      strengthGenerationDebug: { source: 'fallback', matchedRuleIds: [] },
+    };
+  }
+
+  const configuredIds = new Set(strengthRules.map((r) => r.id));
+  const matchedRuleIds: string[] = [];
+  const fromConfig: GeoPassedItem[] = [];
+
+  for (const rule of strengthRules) {
+    const checkName = strengthRuleCheckName(rule);
+    if (!checkName) {
+      console.warn('[passedEngine] strengthRules entry missing check/condition:', rule.id);
+      continue;
+    }
+    if (!evaluateCheck(checkName, features, rule.threshold)) continue;
+    matchedRuleIds.push(rule.id);
+    fromConfig.push({
+      id: rule.id,
+      axis: rule.axis,
+      label: rule.label,
+      description: rule.description,
+      reason: rule.reason,
+      sourceRefs: { ruleId: rule.id, axisScoreAtEmit: axisScores },
+    });
+  }
+
+  const defaults = buildDefaultEditorialGeoStrengthItems(features, result, axisScores, configuredIds);
+  const merged = [...fromConfig, ...defaults];
+
+  let source: StrengthGenerationDebug['source'];
+  if (fromConfig.length > 0 && defaults.length > 0) source = 'mixed';
+  else if (fromConfig.length > 0 && defaults.length === 0) source = 'config';
+  else source = 'mixed';
+
+  return {
+    geoPassed: merged,
+    strengthGenerationDebug: { source, matchedRuleIds },
+  };
+}
+
+export type EditorialPassedEngineResult = {
+  items: GeoPassedItem[];
+  strengthGenerationDebug?: StrengthGenerationDebug;
+};
+
 /**
  * Editorial / commerce: rule-layer passes + bonus signals + optional monthly passedRules.
  */
 export async function runEditorialPassedEngine(
   result: AnalysisResult,
   ruleLayer: GeoRuleLayerResult
-): Promise<GeoPassedItem[]> {
+): Promise<EditorialPassedEngineResult> {
   const config = await loadActiveScoringConfig();
   const features = buildPageFeaturesFromResult(result);
   const axisScores = result.axisScores;
   const pageType = (result.pageType as PageType) ?? 'editorial';
 
   const passed: GeoPassedItem[] = [...ruleLayer.rulePasses];
+  let strengthGenerationDebug: StrengthGenerationDebug | undefined;
 
   if (result.trustSignals?.hasSearchExposure) {
     passed.push({
@@ -230,56 +362,9 @@ export async function runEditorialPassedEngine(
   try {
     const geoPassed: GeoPassedItem[] = [];
     if (pageType === 'editorial') {
-      if (evaluateCheck('first_paragraph_quality', features, 40)) {
-        geoPassed.push({
-          id: 'geo_first_summary',
-          axis: 'answerability',
-          label: '강력한 요약/결론 존재',
-          description: '도입부 요약 신호가 있습니다.',
-          reason: '도입부에 요약 또는 결론이 있어 AI가 빠르게 인용할 수 있습니다.',
-          sourceRefs: { axisScoreAtEmit: axisScores },
-        });
-      }
-      if (evaluateCheck('quotable_sentences_min', features, 3)) {
-        geoPassed.push({
-          id: 'geo_quotable',
-          axis: 'citation',
-          label: '인용 가능한 문장 다수',
-          description: '인용 후보 문장이 충분합니다.',
-          reason: '수치·팩트 기반의 짧은 문장이 있어 AI 인용 확률이 높습니다.',
-          sourceRefs: { axisScoreAtEmit: axisScores },
-        });
-      }
-      if (evaluateCheck('lists_min', features, 1)) {
-        geoPassed.push({
-          id: 'geo_list_structure',
-          axis: 'answerability',
-          label: '목록 구조 활용',
-          description: '목록 구조가 있습니다.',
-          reason: '목록형 구조는 AI가 핵심을 추출하기에 용이합니다.',
-          sourceRefs: { axisScoreAtEmit: axisScores },
-        });
-      }
-      if (evaluateCheck('tables_min', features, 1)) {
-        geoPassed.push({
-          id: 'geo_comparison',
-          axis: 'answerability',
-          label: '비교 구조(테이블) 존재',
-          description: '테이블이 있습니다.',
-          reason: '비교 표는 구조화된 근거를 제공하여 AI 인용에 유리합니다.',
-          sourceRefs: { axisScoreAtEmit: axisScores },
-        });
-      }
-      if ((features.seedKeywords ?? []).length >= 3) {
-        geoPassed.push({
-          id: 'geo_topical_focus',
-          axis: 'questionMatch',
-          label: '명확한 주제 초점',
-          description: '시드 키워드가 충분합니다.',
-          reason: '핵심 주제 토큰이 명확해 AI가 주제 중심으로 인용하기 쉽습니다.',
-          sourceRefs: { axisScoreAtEmit: axisScores },
-        });
-      }
+      const collected = collectEditorialStrengthItemsFromConfig(result, features, axisScores, config);
+      geoPassed.push(...collected.geoPassed);
+      strengthGenerationDebug = collected.strengthGenerationDebug;
     }
     if (pageType === 'commerce') {
       if (evaluateCheck('tables_min', features, 1) || evaluateCheck('data_dense_blocks_min', features, 1)) {
@@ -442,5 +527,5 @@ export async function runEditorialPassedEngine(
     }
   }
 
-  return passed;
+  return { items: passed, strengthGenerationDebug };
 }

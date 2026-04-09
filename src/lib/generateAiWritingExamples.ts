@@ -24,6 +24,7 @@ import { waitForGeminiRateLimitSlot } from './geminiGlobalRateLimiter';
 import type {
   AiWritingExamplesData,
   AiWritingExamplesRequestBody,
+  AiWritingGuideRulePromptDebug,
 } from './aiWritingExamplesTypes';
 
 /** Shown only when no Gemini key is configured (client may surface this). */
@@ -133,6 +134,115 @@ Respond with ONLY valid JSON (no markdown fences). Use exactly this shape (headi
   "verdictExample": "string",
   "headingSuggestions": ["string", "string", "string", "string"]
 }`;
+}
+
+function buildGuideRuleFirstPrompt(input: AiWritingExamplesRequestBody): string {
+  const displayTitle = normalizeWritingExamplesTitle(input.title, input.url);
+  const locale = input.locale === 'en' ? 'en' : 'ko';
+  const guides = input.matchedGuideRules ?? [];
+  const guidesBlock = guides
+    .map((g, i) => {
+      const pr = g.priority ? ` (priority: ${g.priority})` : '';
+      return `${i + 1}. [id=${g.id}]${pr}\n   ${g.message || '(no message text)'}`;
+    })
+    .join('\n\n');
+
+  const relatedIssues =
+    input.relatedIssueIds && input.relatedIssueIds.length > 0
+      ? input.relatedIssueIds.join(', ')
+      : '(none — do not invent issues)';
+
+  const platformLine = input.platform ? `Platform / hosting: ${input.platform}` : '';
+  const guideLine = input.currentGuideText
+    ? `Primary UI guide line (same analysis): ${input.currentGuideText}`
+    : '';
+
+  const questionsBlock =
+    input.questions.length > 0
+      ? input.questions.map((q, i) => `${i + 1}. ${q}`).join('\n')
+      : '(none)';
+
+  const sectionsBlock =
+    input.recommendedSections.length > 0
+      ? input.recommendedSections.map((s, i) => `${i + 1}. ${s}`).join('\n')
+      : '(none)';
+
+  const outputLanguage =
+    locale === 'ko'
+      ? `Output language: every user-facing string in the JSON must be **natural Korean (한국어)**.`
+      : `Output language: every user-facing string in the JSON must be **natural English**.`;
+
+  const headingRules =
+    locale === 'ko'
+      ? `headingSuggestions: 4–6 short lines as **search-style questions** tied to this page topic (not bare labels like FAQ/결론).`
+      : `headingSuggestions: 4–6 short lines as **search-style questions** tied to this page topic (not bare FAQ/Conclusion labels).`;
+
+  return `You are generating **example rewrite text** for a writer (GEO-oriented pages). You are NOT a grader.
+
+Hard rules:
+- **Follow the matched guide rules below exactly.** They are the only optimization targets for this task.
+- Do **not** invent new SEO goals, missing issues, or strengths. Do **not** score the page or say what is "wrong" in general.
+- Do **not** output audit-style advice — only concrete example prose the author can paste or adapt.
+- Map each guide to the JSON fields where it fits best: use faqExamples for Q&A-style guides, prosConsExample for comparison / trade-offs, summaryExample for a tight intro/takeaway, verdictExample for a closing stance, headingSuggestions for H2-style lines. If a guide fits multiple slots, prioritize the clearest match and keep examples consistent with the guide.
+
+${outputLanguage}
+
+---
+
+Page URL: ${input.url}
+Page title (for context; do not spam it in every field): ${displayTitle || '(untitled)'}
+Page type: ${input.pageType}
+${platformLine}
+Locale: ${locale}
+
+Content excerpt:
+${input.contentSnippet || '(empty)'}
+
+Reference search questions (context only):
+${questionsBlock}
+
+Recommended structural sections (context only — do not treat as commands):
+${sectionsBlock}
+
+Related issue ids from analysis (opaque labels only — **do not** diagnose or expand):
+${relatedIssues}
+
+${guideLine}
+
+---
+
+**Matched guide rules (required targets — implement these in your examples):**
+
+${guidesBlock}
+
+---
+
+${headingRules}
+
+Respond with ONLY valid JSON (no markdown fences). Same shape as the standard writing assistant:
+{
+  "summaryExample": "string",
+  "faqExamples": [
+    { "question": "string", "answer": "string" },
+    { "question": "string", "answer": "string" },
+    { "question": "string", "answer": "string" }
+  ],
+  "prosConsExample": "string",
+  "verdictExample": "string",
+  "headingSuggestions": ["string", "string", "string", "string"]
+}`;
+}
+
+function resolveGuideRulePromptDebug(
+  input: AiWritingExamplesRequestBody,
+  source: AiWritingGuideRulePromptDebug['source']
+): AiWritingGuideRulePromptDebug {
+  const guides = input.matchedGuideRules ?? [];
+  return {
+    usedGuideRuleIds: guides.map((g) => g.id),
+    usedGuideMessages: guides.map((g) => g.message).filter((m) => m.length > 0),
+    source,
+  };
 }
 
 /** Merge common wrapper keys (e.g. `{ data: { summaryExample: ... } }`) into one object. */
@@ -316,7 +426,7 @@ function normalizeWithFallbacks(parsed: unknown): AiWritingExamplesData | null {
 }
 
 export type GenerateAiWritingExamplesResult =
-  | { ok: true; data: AiWritingExamplesData }
+  | { ok: true; data: AiWritingExamplesData; guideRulePromptDebug?: AiWritingGuideRulePromptDebug }
   | {
       ok: false;
       message: string;
@@ -353,7 +463,9 @@ export async function generateAiWritingExamples(
     };
   }
 
-  const prompt = buildPrompt(input);
+  const useGuideFirst = Boolean(input.matchedGuideRules && input.matchedGuideRules.length > 0);
+  const prompt = useGuideFirst ? buildGuideRuleFirstPrompt(input) : buildPrompt(input);
+  const promptDebug = resolveGuideRulePromptDebug(input, useGuideFirst ? 'guideRules' : 'fallback');
 
   const callGeminiOnce = async () => {
     console.log('[AI WRITING] Gemini call start');
@@ -448,7 +560,7 @@ export async function generateAiWritingExamples(
       console.log('[AI WRITING NORMALIZED RESULT] (log truncated)');
     }
 
-    return { ok: true, data };
+    return { ok: true, data, guideRulePromptDebug: promptDebug };
   } catch (err) {
     if (isQuotaError(err)) {
       const sec = extractRetryAfterSeconds(err);

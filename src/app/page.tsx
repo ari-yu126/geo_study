@@ -636,7 +636,7 @@ export default function Home() {
           </h1>
           <p style={{ fontSize: 16, color: "#8b9cb3", lineHeight: 1.7, maxWidth: 420, margin: "0 auto" }}>
             URL을 입력하면 사이트를 실시간으로 분석하고<br />
-            부족한 부분을 직접 사이트 위에 표시해줍니다
+            부족한 부분을 표시해줍니다
           </p>
         </div>
 
@@ -784,7 +784,7 @@ export default function Home() {
         </div>
 
         <p className="animate-fade-up" style={{ animationDelay: "280ms", textAlign: "center", fontSize: 14, color: "#6d8099", marginTop: 20, fontFamily: "var(--font-mono)" }}>
-          사이트를 실시간 프리뷰하며 부족한 부분을 직접 표시합니다
+          사이트를 실시간 프리뷰하며 부족한 부분을 표시합니다
         </p>
       </div>
     </div>

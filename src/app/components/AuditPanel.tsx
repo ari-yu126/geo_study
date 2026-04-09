@@ -35,6 +35,7 @@ import {
   getAxisRows,
   getIssueCategoryLabel,
   getStrengthRows,
+  GEO_ISSUE_CATEGORY_ORDER,
   groupGeoIssuesByCategory,
   hasGeoExplain,
   IMPACT_LABEL,
@@ -46,6 +47,7 @@ import type {
   AiWritingExamplesData,
   AiWritingExamplesPageType,
 } from "@/lib/aiWritingExamplesTypes";
+import { getAiWritingGuideCacheSignature } from "@/lib/aiWritingExamplesTypes";
 import { buildFallbackAiWritingExamples } from "@/lib/aiWritingExamplesFallback";
 import { AI_WRITING_QUOTA_NOTICE } from "@/lib/aiWritingExamplesMessages";
 import { readAiWritingCache, writeAiWritingCache } from "@/app/utils/aiWritingExamplesClientCache";
@@ -57,6 +59,7 @@ import {
 } from "@/lib/recommendations/recommendationUiLabels";
 import { buildGeoScoreExplanation } from "@/lib/geoScoreExplanation";
 import ScoreGauge, { getGradeInfo } from "./ScoreGauge";
+import { GeoIssuesAlertIcon, GeoStrengthTrophyIcon } from "./geoAuditIcons";
 
 const PRIORITY_COLORS: Record<string, { color: string; bg: string; border: string; label: string }> = {
   high: { color: "#f05c7a", bg: "rgba(240,92,122,0.08)", border: "rgba(240,92,122,0.25)", label: "긴급" },
@@ -397,6 +400,143 @@ function pageEvalStandard(pageType?: AnalysisResult["pageType"]) {
   }
 }
 
+/** `?debug=true` (dev only): show how each panel maps to pipeline categories. */
+function DebugCategoryBox({
+  show,
+  heading,
+  lines,
+}: {
+  show: boolean;
+  heading: string;
+  lines: string[];
+}) {
+  if (!show || lines.length === 0) return null;
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        marginBottom:10,
+        padding: "8px 10px",
+        borderRadius: 8,
+        background: "rgba(91,110,245,0.08)",
+        border: "1px dashed rgba(91,110,245,0.35)",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 10,
+          color: "#818cf8",
+          fontFamily: "var(--font-mono)",
+          fontWeight: 600,
+          letterSpacing: "0.04em",
+          marginBottom: 10,
+        }}
+      >
+        {heading}
+      </div>
+      <ul
+        style={{
+          margin: 0,
+          paddingLeft: 16,
+          fontSize: 10,
+          color: "#8b9cb3",
+          lineHeight: 1.55,
+          fontFamily: "var(--font-mono)",
+          listStyle: "disc",
+        }}
+      >
+        {lines.map((line, i) => (
+          <li key={i}>{line}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function buildScoreCategoryDebugLines(result: AnalysisResult): string[] {
+  const pt = result.pageType ?? "default";
+  const ev = pageEvalStandard(result.pageType);
+  const hasCitation = (result.scores.citationScore ?? -1) >= 0;
+  return [
+    `pageType: ${pt}`,
+    `프로필: ${ev.title} — ${ev.hint}`,
+    hasCitation
+      ? "이 카드 5분할(표시): AI 인용 / 문단 / 답변가능성 / SEO 구조 / 신뢰 — 가중 합산 표시"
+      : "이 카드 4분할(표시): 문단 / 답변가능성 / SEO 구조 / 신뢰 — 인용 축 미노출 시",
+    "최종 점수: 활성 scoring 설정 → 특징량 → 부분점수 → pageType 브랜치(웹·커머스·비디오) → finalScore (단일 고정 식 아님)",
+  ];
+}
+
+function buildAxisCategoryDebugLines(result: AnalysisResult): string[] {
+  const rows = getAxisRows(result);
+  const keys = rows.map((r) => `${r.key}=${r.label}`).join(" · ");
+  return [
+    "카테고리: GeoAxis 부분 점수(0–100 스냅샷)",
+    keys ? `포함 축: ${keys}` : "축 스냅샷 없음 (원시 점수만)",
+    result.pageType === "video"
+      ? "비디오: videoMetadata 축 포함 가능"
+      : "웹/커머스: density 등 비디오 전용 축은 표시에서 제외될 수 있음",
+  ];
+}
+
+function buildStrengthCategoryDebugLines(result: AnalysisResult): string[] {
+  const lines: string[] = [];
+  if (result.pageType === "video") {
+    lines.push("엔진: runYoutubePassedEngine — youtubePassedCheckRules + geo_vid_* 등 유튜브 전용 신호");
+  } else {
+    lines.push(
+      "엔진: runEditorialPassedEngine — runGeoRuleLayer 통과분 + 에디토리얼 strengthRules/geo_* + 커머스 제품 신호 + 월간 passedRules + 축 하이라이트"
+    );
+  }
+  lines.push(
+    result.geoExplain?.passed?.length
+      ? "표시 우선순위: geoExplain.passed → PassedCheck 매핑"
+      : "표시: deriveAuditIssues가 만든 passedChecks"
+  );
+  const sgd = result.geoExplain?.strengthGenerationDebug;
+  if (sgd) {
+    lines.push(`strengthRules 소스: ${sgd.source} · matched: ${sgd.matchedRuleIds?.length ? sgd.matchedRuleIds.join(", ") : "—"}`);
+  }
+  lines.push("항목 분류: GeoPassedItem.axis (축) + 규칙 id — 카드 우측 축 배지와 동일 체계");
+  return lines;
+}
+
+function buildIssuesCategoryDebugLines(result: AnalysisResult): string[] {
+  const lines: string[] = [];
+  if (result.pageType === "video") {
+    lines.push("엔진: runYoutubeIssueEngine (유튜브 전용 이슈 규칙)");
+  } else {
+    lines.push("엔진: runGeoRuleLayer 실패분 + runEditorialIssueEngine — 설정 이슈룰 + 축 약점 등");
+  }
+  const ig = result.geoExplain?.issueGenerationDebug;
+  if (ig) {
+    lines.push(`이슈룰 해석 소스: ${ig.source} · pageType: ${ig.pageType}`);
+    lines.push(`매칭 규칙 id(일부): ${ig.matchedRuleIds?.slice(0, 12).join(", ") || "—"}${(ig.matchedRuleIds?.length ?? 0) > 12 ? " …" : ""}`);
+  }
+  const catLabels = GEO_ISSUE_CATEGORY_ORDER.map((c) => `${c}(${getIssueCategoryLabel(c)})`).join(" → ");
+  lines.push(`UI 그룹 순서(카테고리): ${catLabels}`);
+  return lines;
+}
+
+function buildRecommendationCategoryDebugLines(
+  pageType: AnalysisResult["pageType"],
+  rec: NonNullable<AnalysisResult["recommendations"]>
+): string[] {
+  const lines: string[] = [
+    "생성: buildGeoRecommendationsFromSignals — 템플릿(ko/en) + 축/신호 기반 결정적 문구",
+    "후처리: filterRecommendationsByPageType — 표면(에디토리얼/커머스/비디오)에 맞게 표시 문구 정리",
+    `trace.locale: ${rec.trace?.locale ?? "—"}`,
+  ];
+  const gd = rec.guideGenerationDebug;
+  if (gd) {
+    lines.push(`월간 guideRules 병합: source=${gd.source} · ids=${gd.matchedRuleIds?.join(", ") || "—"}`);
+  } else {
+    lines.push("월간 guideRules: 병합 메타 없음(엔진만 또는 미매칭)");
+  }
+  lines.push(`pageType 기준 필터: ${pageType ?? "editorial"}`);
+  return lines;
+}
+
 const SEARCH_SOURCE_LABEL: Record<string, string> = {
   google: "Google",
   naver: "Naver",
@@ -486,7 +626,6 @@ const CARD_STYLE = {
   borderRadius: 12,
   border: "1px solid #1e2d45",
   background: "#0d1321",
-  boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
 } as const;
 
 function CopyableBlock({
@@ -670,17 +809,39 @@ export default function AuditPanel({
     setAiWritingExamplesError(null);
 
     const title = result.meta.title?.trim() || result.meta.ogTitle?.trim() || "";
+    const contentSnippet = buildAiWritingContentSnippet(result);
+    const matchedFromAnalysis =
+      result.recommendations?.guideGenerationDebug?.matchedGuideRules ?? [];
+    const matchedGuideRules =
+      matchedFromAnalysis.length > 0
+        ? matchedFromAnalysis.map((g) => ({
+            id: g.id,
+            message: g.message,
+            ...(g.priority ? { priority: g.priority } : {}),
+          }))
+        : undefined;
+    const relatedIssueIds = (result.geoExplain?.issues ?? []).map((i) => i.id).filter(Boolean);
+    const priorityNotes = result.recommendations?.actionPlan?.priorityNotes ?? [];
+    const currentGuideText = priorityNotes[0]?.trim() || undefined;
+
     const body = {
       url: result.url,
       title,
-      contentSnippet: buildAiWritingContentSnippet(result),
+      pageTitle: title,
+      contentSnippet,
+      contentText: contentSnippet,
       pageType: mapAiWritingPageType(result),
       questions: (result.searchQuestions ?? []).map((q) => q.text),
       recommendedSections: result.recommendations?.actionPlan.suggestedHeadings ?? [],
       locale: loc,
+      ...(result.platform ? { platform: result.platform } : {}),
+      ...(matchedGuideRules ? { matchedGuideRules } : {}),
+      ...(relatedIssueIds.length > 0 ? { relatedIssueIds } : {}),
+      ...(currentGuideText ? { currentGuideText } : {}),
     };
 
-    const cached = readAiWritingCache(urlKey);
+    const guideSig = getAiWritingGuideCacheSignature(body);
+    const cached = readAiWritingCache(urlKey, guideSig);
     if (cached) {
       console.log("[AI WRITING FETCH SKIPPED - USING EXISTING STATE]");
       setAiWritingExamplesData(cached.data);
@@ -725,7 +886,7 @@ export default function AuditPanel({
         setAiWritingExamplesData(json.data);
         setAiWritingNotice(json.notice ?? null);
         setAiWritingDegraded(Boolean(json.degraded));
-        writeAiWritingCache(urlKey, {
+        writeAiWritingCache(urlKey, guideSig, {
           data: json.data,
           notice: json.notice ?? null,
           degraded: json.degraded,
@@ -739,7 +900,7 @@ export default function AuditPanel({
         setAiWritingExamplesData(fb);
         setAiWritingNotice(AI_WRITING_QUOTA_NOTICE[loc]);
         setAiWritingDegraded(true);
-        writeAiWritingCache(urlKey, {
+        writeAiWritingCache(urlKey, guideSig, {
           data: fb,
           notice: AI_WRITING_QUOTA_NOTICE[loc],
           degraded: true,
@@ -808,10 +969,11 @@ export default function AuditPanel({
   const strengthRows = getStrengthRows(result, passedChecks);
   const axisRows = getAxisRows(result);
   const recLocale = getRecommendationLocale(result.recommendations?.trace?.locale, result.meta, "");
-  const sec = RECOMMENDATION_SECTION_LABELS[recLocale];
-  const aiAssist = AI_WRITING_ASSISTANT_UI[recLocale];
+  /** Panel chrome (titles, section headers, copy actions) stays Korean; recommendation body text follows `recLocale`. */
+  const sec = RECOMMENDATION_SECTION_LABELS.ko;
+  const aiAssist = AI_WRITING_ASSISTANT_UI.ko;
   const focusByAxis = CONTENT_FOCUS_LABEL[recLocale];
-  const copyUi = recLocale === "en" ? { copy: "Copy", copied: "Copied" } : { copy: "복사", copied: "복사됨" };
+  const copyUi = { copy: "복사", copied: "복사됨" } as const;
   const opportunities = geoExplain?.opportunities ?? [];
 
   const platformConstraints = platformConstraintsProp ?? result.platformConstraints;
@@ -1187,7 +1349,7 @@ export default function AuditPanel({
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 12px", marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 12px"}}>
           {categories.map((cat) => {
             const pct = Math.min((cat.score / cat.maxScore) * 100, 100);
             return (
@@ -1204,35 +1366,46 @@ export default function AuditPanel({
             );
           })}
         </div>
-      </div>
+        <DebugCategoryBox
+          show={geoExplainDebugMode}
+          heading="[debug] 점수 기준 · 카테고리"
+          lines={buildScoreCategoryDebugLines(result)}
+        />
 
-      {/* 2. 축 점수 (0–100, GEO Explain) */}
-      {axisRows.length > 0 && (
-        <div style={CARD_STYLE}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
-            세부 점수 (0–100)
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 12px" }}>
-            {axisRows.map((row) => (
-              <div key={row.key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <span style={{ fontSize: 11, color: "#c4d0e0", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.label}</span>
-                  <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: "#5b6ef5", flexShrink: 0 }}>{row.value}</span>
+        {/* 2. 축 점수 (0–100, GEO Explain) */}
+        {axisRows.length > 0 && (
+          <div style={{borderTop: '1px solid #1e2d45', paddingTop: 20, marginTop:20}}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
+              세부 점수 (0-100)
+            </div>
+            <DebugCategoryBox
+              show={geoExplainDebugMode}
+              heading="[debug] 세부 점수(축) 기준 · 카테고리"
+              lines={buildAxisCategoryDebugLines(result)}
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 12px" }}>
+              {axisRows.map((row) => (
+                <div key={row.key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ fontSize: 11, color: "#c4d0e0", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.label}</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: "#5b6ef5", flexShrink: 0 }}>{row.value}</span>
+                  </div>
+                  {/* <div style={{ height: 4, background: "#1e2d45", borderRadius: 99, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${row.value}%`, background: "linear-gradient(90deg, #5b6ef5, #00d4c8)", borderRadius: 99, transition: "width 0.6s" }} />
+                  </div> */}
                 </div>
-                <div style={{ height: 4, background: "#1e2d45", borderRadius: 99, overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${row.value}%`, background: "linear-gradient(90deg, #5b6ef5, #00d4c8)", borderRadius: 99, transition: "width 0.6s" }} />
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* 3. 잘된 점 / Strengths */}
       <div style={CARD_STYLE}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 12, color: "#34d399", fontFamily: "var(--font-mono)", fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <GeoStrengthTrophyIcon />
+            <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
               잘된 점 {strengthRows.length > 0 ? `(${strengthRows.length})` : ""}
             </span>
             {geo && geoExplain && geoExplain.passed.length > 0 && (
@@ -1240,6 +1413,11 @@ export default function AuditPanel({
             )}
           </div>
         </div>
+        <DebugCategoryBox
+          show={geoExplainDebugMode}
+          heading="[debug] 잘된 점 기준 · 카테고리"
+          lines={buildStrengthCategoryDebugLines(result)}
+        />
 
         {strengthRows.length === 0 ? (
           <div style={{ fontSize: 13, color: "#7a8da3", padding: "8px 4px" }}>
@@ -1349,7 +1527,7 @@ export default function AuditPanel({
               fontFamily: "var(--font-mono)",
               textTransform: "uppercase",
               letterSpacing: "0.08em",
-              marginBottom: 8,
+              marginBottom: 10,
             }}
           >
             플랫폼 제약
@@ -1382,9 +1560,14 @@ export default function AuditPanel({
 
       {/* 4. 발견된 이슈 */}
       <div style={CARD_STYLE}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
-          발견된 이슈 ({useGeoIssueList ? geoIssues.length : issues.length})
-          {useGeoIssueList && <span style={{ marginLeft: 8, fontSize: 10, color: "#5b6ef5" }}>GEO</span>}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          <GeoIssuesAlertIcon />
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#7a8da3", fontFamily: "var(--font-body)" }}>
+            발견된 이슈 ({useGeoIssueList ? geoIssues.length : issues.length})
+            {useGeoIssueList && (
+              <span style={{ marginLeft: 8, fontSize: 11, color: "#5b6ef5", fontFamily: "var(--font-mono)" }}>GEO</span>
+            )}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
           {(["all", "high", "medium", "low"] as const).map((f) => {
@@ -1415,6 +1598,11 @@ export default function AuditPanel({
             );
           })}
         </div>
+        <DebugCategoryBox
+          show={geoExplainDebugMode}
+          heading="[debug] 발견된 이슈 · 카테고리"
+          lines={buildIssuesCategoryDebugLines(result)}
+        />
         <div style={{ marginTop: 10 }}>
           {filtered.length === 0 && (
             <div style={{ textAlign: "center", color: "#7a8da3", fontSize: 14, marginTop: 24 }}>
@@ -1619,13 +1807,13 @@ export default function AuditPanel({
               ? sec.improvementSummaryReview
               : sec.improvementSummary;
         const guideTitle =
-          recLocale === "en"
-            ? result.pageType === "video"
-              ? "Video description guide"
-              : "Content improvement guide"
-            : result.pageType === "video"
-              ? "영상 설명란 개선 가이드"
-              : "콘텐츠 개선 가이드";
+          result.pageType === "video" ? "영상 설명란 개선 가이드" : "콘텐츠 개선 가이드";
+        const headingsSectionLabel =
+          result.pageType === "video"
+            ? sec.recommendedHeadingsVideo
+            : result.pageType === "commerce"
+              ? sec.recommendedHeadingsCommerce
+              : sec.recommendedHeadings;
         const blocksJoin = "\n";
         const blocksText = rec.actionPlan.suggestedBlocks.join(blocksJoin);
         return (
@@ -1649,6 +1837,11 @@ export default function AuditPanel({
               )}
             </div>
           </div>
+          <DebugCategoryBox
+            show={geoExplainDebugMode}
+            heading="[debug] 개선 가이드 · 카테고리"
+            lines={buildRecommendationCategoryDebugLines(result.pageType, rec)}
+          />
           <div style={{ fontWeight: 600, color: "#a5b4fc", fontSize: 11, marginBottom: 6, letterSpacing: "0.04em", textTransform: "uppercase" }}>
             {improvementSummaryLabel}
           </div>
@@ -1694,21 +1887,25 @@ export default function AuditPanel({
               </ol>
             </div>
           )}
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#818cf8", marginBottom: 6 }}>{sec.recommendedHeadings}</div>
-            <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
-              <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{rec.actionPlan.suggestedHeadings.join("\n")}</CopyableBlock>
+          {rec.actionPlan.suggestedHeadings.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#818cf8", marginBottom: 6 }}>{headingsSectionLabel}</div>
+              <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
+                <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{rec.actionPlan.suggestedHeadings.join("\n")}</CopyableBlock>
+              </div>
             </div>
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", marginBottom: 6 }}>{sec.recommendedBlocks}</div>
-            {result.pageType === "video" && (
-              <div style={{ fontSize: 11, color: "#8b9cb3", lineHeight: 1.5, marginBottom: 8 }}>{sec.videoBlocksHint}</div>
-            )}
-            <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,200,0.06)", border: "1px solid rgba(0,212,200,0.2)" }}>
-              <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{blocksText}</CopyableBlock>
+          )}
+          {rec.actionPlan.suggestedBlocks.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", marginBottom: 6 }}>{sec.recommendedBlocks}</div>
+              {result.pageType === "video" && (
+                <div style={{ fontSize: 11, color: "#8b9cb3", lineHeight: 1.5, marginBottom: 8 }}>{sec.videoBlocksHint}</div>
+              )}
+              <div style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,200,0.06)", border: "1px solid rgba(0,212,200,0.2)" }}>
+                <CopyableBlock copyLabel={copyUi.copy} copiedLabel={copyUi.copied}>{blocksText}</CopyableBlock>
+              </div>
             </div>
-          </div>
+          )}
           <div style={{ marginTop: 12, marginBottom: aiWritingExamplesOpen ? 10 : 0 }}>
             <button
               type="button"

@@ -11,7 +11,10 @@ import type {
   SearchQuestion,
 } from './analysisTypes';
 import { buildGeoRecommendationsFromSignals } from './recommendations/buildGeoRecommendations';
+import { filterRecommendationsByPageType } from './recommendations/filterRecommendationsByPageType';
+import { mergeGuideRulesIntoRecommendations } from './recommendations/guideRulesMerge';
 import { toRecommendationContext, type LegacyRecommendationInput } from './recommendations/legacyAdapter';
+import { getProfileForPageType, loadActiveScoringConfig } from './scoringConfigLoader';
 
 export type GeoRecommendationsOptions = {
   searchQuestions?: SearchQuestion[];
@@ -20,6 +23,8 @@ export type GeoRecommendationsOptions = {
   editorialSubtype?: EditorialSubtype;
   geoOpportunities?: GeoOpportunity[];
   geoIssues?: GeoIssue[];
+  /** Strength (passed) item ids — optional triggers for guideRules `basedOn`. */
+  geoPassedIds?: string[];
   axisScores?: GeoAxisScores;
   /** Meta + body sample for locale/category (required for best results) */
   meta?: Pick<AnalysisMeta, 'title' | 'description' | 'ogTitle' | 'ogDescription'>;
@@ -63,5 +68,16 @@ export async function generateGeoRecommendations(
     hasReviewSchema: options?.hasReviewSchema ?? false,
     limitedAnalysis: options?.limitedAnalysis ?? false,
   };
-  return buildGeoRecommendationsFromSignals(toRecommendationContext(legacy));
+  const base = buildGeoRecommendationsFromSignals(toRecommendationContext(legacy));
+  const config = await loadActiveScoringConfig();
+  const profile = getProfileForPageType(config, pageType);
+  const issueIdSet = new Set((options?.geoIssues ?? []).map((i) => i.id));
+  const passedIdSet = new Set(options?.geoPassedIds ?? []);
+  const merged = mergeGuideRulesIntoRecommendations(base, {
+    guideRules: profile?.guideRules,
+    issueIdSet,
+    passedIdSet,
+    pageType,
+  });
+  return filterRecommendationsByPageType(merged, pageType);
 }

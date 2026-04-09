@@ -188,7 +188,7 @@ export const RECOMMENDATION_SNAPSHOT_FIXTURES: RecommendationSnapshotFixture[] =
       limitedAnalysis: false,
     },
     expectTrendOrGapSubstrings: ['still missing', 'needs chapters'],
-    expectHeadingSubstring: 'Chapters',
+    /** Headings cleared for video in filterRecommendationsByPageType */
     expectTraceSourcePrefixes: ['signal:uncovered_questions', 'axis:videoMetadata'],
   },
   {

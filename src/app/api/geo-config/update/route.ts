@@ -221,9 +221,8 @@ const PROFILE_WEIGHT_KEYS = [
 
 const REQUIRED_PROFILE_KEYS = ['editorial', 'video', 'commerce', 'default'] as const;
 
-const ISSUE_RULE_STRING_FIELDS = [
+const ISSUE_RULE_BASE_STRING_FIELDS = [
   'id',
-  'check',
   'label',
   'description',
   'targetSelector',
@@ -407,10 +406,15 @@ function validateGeoScoringConfigV2(
           return;
         }
         const r = rule as Record<string, unknown>;
-        for (const field of ISSUE_RULE_STRING_FIELDS) {
+        for (const field of ISSUE_RULE_BASE_STRING_FIELDS) {
           if (typeof r[field] !== 'string' || (r[field] as string).trim() === '') {
             reasons.push(`${profileKey}.issueRules[${i}] missing or invalid ${field}`);
           }
+        }
+        const hasCheck = typeof r.check === 'string' && (r.check as string).trim() !== '';
+        const hasCond = typeof r.condition === 'string' && (r.condition as string).trim() !== '';
+        if (!hasCheck && !hasCond) {
+          reasons.push(`${profileKey}.issueRules[${i}] must include a non-empty check or condition`);
         }
         const pr = r.priority;
         if (pr !== 'high' && pr !== 'medium' && pr !== 'low') {
