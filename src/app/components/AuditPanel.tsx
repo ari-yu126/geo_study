@@ -58,13 +58,16 @@ import {
   RECOMMENDATION_SECTION_LABELS,
 } from "@/lib/recommendations/recommendationUiLabels";
 import { buildGeoScoreExplanation } from "@/lib/geoScoreExplanation";
+import { generateOpportunities } from "@/lib/generateOpportunities";
 import ScoreGauge, { getGradeInfo } from "./ScoreGauge";
+import { GEO_SCORE_AXIS_LABEL_KO } from "@/lib/geoScoreAxisLabels";
+import { GEO_REPORT_LABELS_KO } from "../utils/geoReportLabels";
 import { GeoIssuesAlertIcon, GeoStrengthTrophyIcon } from "./geoAuditIcons";
 
 const PRIORITY_COLORS: Record<string, { color: string; bg: string; border: string; label: string }> = {
-  high: { color: "#f05c7a", bg: "rgba(240,92,122,0.08)", border: "rgba(240,92,122,0.25)", label: "긴급" },
-  medium: { color: "#f5a623", bg: "rgba(245,166,35,0.08)", border: "rgba(245,166,35,0.25)", label: "보통" },
-  low: { color: "#34d399", bg: "rgba(52,211,153,0.08)", border: "rgba(52,211,153,0.25)", label: "낮음" },
+  high: { color: "#f05c7a", bg: "rgba(240,92,122,0.08)", border: "rgba(240,92,122,0.25)", label: GEO_REPORT_LABELS_KO.tipPriorityHigh },
+  medium: { color: "#f5a623", bg: "rgba(245,166,35,0.08)", border: "rgba(245,166,35,0.25)", label: GEO_REPORT_LABELS_KO.tipPriorityMedium },
+  low: { color: "#34d399", bg: "rgba(52,211,153,0.08)", border: "rgba(52,211,153,0.25)", label: GEO_REPORT_LABELS_KO.tipPriorityLow },
 };
 
 function GeoIssueCard({
@@ -578,21 +581,22 @@ function buildCategories(result: AnalysisResult) {
   const base = (arr: { id: string; label: string; score: number; maxScore: number; color: string }[]) =>
     arr.map((cat) => ({ ...cat, icon: CATEGORY_ICONS[cat.id] }));
 
+  const L = GEO_SCORE_AXIS_LABEL_KO;
   if (hasCitation) {
     return base([
-      { id: "citation", label: "AI 인용", score: Math.round((scores.citationScore ?? 0) * 0.40), maxScore: 40, color: "#a855f7" },
-      { id: "paragraph", label: "문단 품질", score: Math.round((scores.paragraphScore ?? 0) * 0.15), maxScore: 15, color: "#5b6ef5" },
-      { id: "answerability", label: "답변가능성", score: Math.round((scores.answerabilityScore ?? 0) * 0.15), maxScore: 15, color: "#00d4c8" },
-      { id: "structure", label: "SEO 구조", score: Math.round(scores.structureScore * 0.15), maxScore: 15, color: "#34d399" },
-      { id: "trust", label: "신뢰 신호", score: Math.round((scores.trustScore ?? 0) * 0.15), maxScore: 15, color: "#f5a623" },
+      { id: "citation", label: L.citation, score: Math.round((scores.citationScore ?? 0) * 0.40), maxScore: 40, color: "#a855f7" },
+      { id: "paragraph", label: L.paragraph, score: Math.round((scores.paragraphScore ?? 0) * 0.15), maxScore: 15, color: "#5b6ef5" },
+      { id: "answerability", label: L.answerability, score: Math.round((scores.answerabilityScore ?? 0) * 0.15), maxScore: 15, color: "#00d4c8" },
+      { id: "structure", label: L.structure, score: Math.round(scores.structureScore * 0.15), maxScore: 15, color: "#34d399" },
+      { id: "trust", label: L.trust, score: Math.round((scores.trustScore ?? 0) * 0.15), maxScore: 15, color: "#f5a623" },
     ]);
   }
 
   return base([
-    { id: "paragraph", label: "문단 품질", score: Math.round((scores.paragraphScore ?? 0) * 0.35), maxScore: 35, color: "#5b6ef5" },
-    { id: "answerability", label: "답변가능성", score: Math.round((scores.answerabilityScore ?? 0) * 0.25), maxScore: 25, color: "#00d4c8" },
-    { id: "structure", label: "SEO 구조", score: Math.round(scores.structureScore * 0.20), maxScore: 20, color: "#34d399" },
-    { id: "trust", label: "신뢰 신호", score: Math.round((scores.trustScore ?? 0) * 0.15), maxScore: 15, color: "#f5a623" },
+    { id: "paragraph", label: L.paragraph, score: Math.round((scores.paragraphScore ?? 0) * 0.35), maxScore: 35, color: "#5b6ef5" },
+    { id: "answerability", label: L.answerability, score: Math.round((scores.answerabilityScore ?? 0) * 0.25), maxScore: 25, color: "#00d4c8" },
+    { id: "structure", label: L.structure, score: Math.round(scores.structureScore * 0.20), maxScore: 20, color: "#34d399" },
+    { id: "trust", label: L.trust, score: Math.round((scores.trustScore ?? 0) * 0.15), maxScore: 15, color: "#f5a623" },
   ]);
 }
 
@@ -658,6 +662,13 @@ function CopyableBlock({
       setTimeout(() => setCopied(false), 1500);
     }
   }, [children]);
+
+  const listItems = children
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => (l.startsWith("- ") ? l.slice(2).trim() : l));
+
   return (
     <div style={{ position: "relative", marginBottom: 6 }}>
       <button
@@ -686,18 +697,24 @@ function CopyableBlock({
       {label && (
         <div style={{ fontSize: 11, fontWeight: 600, color: "#7a8da3", marginBottom: 4 }}>{label}</div>
       )}
-      <div
+      <ul
         style={{
           paddingRight: 60,
+          paddingLeft: 18,
+          margin: 0,
           fontSize: 12,
           color: "#c4d0e0",
           lineHeight: 1.6,
-          whiteSpace: "pre-wrap",
           wordBreak: "break-word",
+          listStyle: "circle",
         }}
       >
-        {children}
-      </div>
+        {listItems.map((line, i) => (
+          <li key={i} style={{ marginBottom: 4 }}>
+            {line}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -967,6 +984,7 @@ export default function AuditPanel({
       };
 
   const strengthRows = getStrengthRows(result, passedChecks);
+
   const axisRows = getAxisRows(result);
   const recLocale = getRecommendationLocale(result.recommendations?.trace?.locale, result.meta, "");
   /** Panel chrome (titles, section headers, copy actions) stays Korean; recommendation body text follows `recLocale`. */
@@ -981,6 +999,19 @@ export default function AuditPanel({
   const auditIssueById = (id: string) => issues.find((i) => i.id === id);
 
   const geoIssueGroups = useGeoIssueList ? groupGeoIssuesByCategory(filteredGeoIssues) : [];
+
+  const auditIssueIds = useMemo(() => {
+    if (useGeoIssueList && geoExplain?.issues?.length) {
+      return dedupeGeoIssuesById(geoExplain.issues).map((g) => g.id);
+    }
+    return issues.map((i) => i.id);
+  }, [useGeoIssueList, geoExplain?.issues, issues]);
+  const strengthOpportunities = useMemo(
+    () => generateOpportunities(result, result.pageType ?? "default", auditIssueIds),
+    [result, auditIssueIds]
+  );
+  const auditIssueCount = useGeoIssueList ? geoIssues.length : issues.length;
+  const showStrengthOpportunities = auditIssueCount <= 2 && strengthOpportunities.length > 0;
 
   /**
    * While reanalyzing: show the in-flight request URL (committedUrl / urlInput), not `result.normalizedUrl`.
@@ -1400,7 +1431,7 @@ export default function AuditPanel({
         )}
       </div>
 
-      {/* 3. 잘된 점 / Strengths */}
+      {/* 2. 잘된 점 / Strengths */}
       <div style={CARD_STYLE}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1408,9 +1439,6 @@ export default function AuditPanel({
             <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
               잘된 점 {strengthRows.length > 0 ? `(${strengthRows.length})` : ""}
             </span>
-            {geo && geoExplain && geoExplain.passed.length > 0 && (
-              <span style={{ fontSize: 10, color: "#10b981", fontFamily: "var(--font-mono)" }}>GEO</span>
-            )}
           </div>
         </div>
         <DebugCategoryBox
@@ -1428,7 +1456,6 @@ export default function AuditPanel({
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {(strengthRows.slice(0, passedOpen ? strengthRows.length : Math.min(5, strengthRows.length))).map((row) => {
                 const legacyPc = passedChecks.find((p) => p.id === row.id);
-                const isGeoStrength = Boolean(geo && geoExplain && geoExplain.passed.some((p) => p.id === row.id));
                 const isExpanded = expandedPassedId === row.id;
                 return (
                   <button
@@ -1452,13 +1479,12 @@ export default function AuditPanel({
                     }}
                   >
                     <span
-                      title={isGeoStrength ? "GEO Explain — passed signal" : undefined}
                       style={{
                         width: 22,
                         height: 22,
                         borderRadius: "50%",
-                        background: isGeoStrength ? "rgba(52,211,153,0.18)" : "rgba(99,102,241,0.06)",
-                        color: isGeoStrength ? "#10b981" : "#7a8da3",
+                        background: "rgba(52,211,153,0.18)",
+                        color: "#10b981",
                         fontSize: 12,
                         fontWeight: 800,
                         display: "flex",
@@ -1468,15 +1494,12 @@ export default function AuditPanel({
                         marginTop: 1,
                       }}
                     >
-                      {isGeoStrength ? "G" : <Check size={12} strokeWidth={3} style={{ color: "inherit" }} />}
+                      <Check size={12} strokeWidth={3} style={{ color: "inherit" }} />
                     </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: isExpanded ? 6 : 0 }}>
                         <span style={{ fontSize: 14, fontWeight: 600, color: "#c4d0e0", lineHeight: 1.3 }}>{row.label}</span>
                         {isExpanded ? <ChevronUp size={14} style={{ color: "#34d399", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />}
-                        {isGeoStrength && (
-                          <span style={{ fontSize: 11, color: "#10b981", fontWeight: 700, marginLeft: "auto", fontFamily: "var(--font-mono)" }}>GEO</span>
-                        )}
                       </div>
                       {isExpanded && (
                         <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.6, borderTop: "1px dashed rgba(52,211,153,0.12)", paddingTop: 6, marginTop: 4 }}>
@@ -1516,57 +1539,12 @@ export default function AuditPanel({
         )}
       </div>
 
-      {/* 플랫폼 제약 (네이버 블로그 등): 기술 SEO는 작성자가 직접 수정 불가 */}
-      {platformConstraints && platformConstraints.length > 0 && (
-        <div style={{ ...CARD_STYLE, marginBottom: 10 }}>
-          <div
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#a78bfa",
-              fontFamily: "var(--font-mono)",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              marginBottom: 10,
-            }}
-          >
-            플랫폼 제약
-          </div>
-          <p style={{ fontSize: 11, color: "#7a8da3", lineHeight: 1.5, marginBottom: 10 }}>
-            아래 항목은 호스팅 환경상 직접 수정이 어렵습니다. 감점이 아니라 &quot;조치 불가&quot;에 가깝게 이해하세요.
-          </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {platformConstraints.map((c) => (
-              <div
-                key={c.id}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid rgba(167,139,250,0.25)",
-                  background: "rgba(167,139,250,0.06)",
-                }}
-              >
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#ddd6fe", marginBottom: 4 }}>{c.label}</div>
-                <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55, marginBottom: 6 }}>{c.description}</div>
-                <div style={{ fontSize: 12, color: "#5eead4", lineHeight: 1.5 }}>
-                  <span style={{ fontWeight: 600, color: "#7dd3fc" }}>대안 · </span>
-                  {c.alternative}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 4. 발견된 이슈 */}
+      {/* 3. 발견된 이슈 */}
       <div style={CARD_STYLE}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
           <GeoIssuesAlertIcon />
           <div style={{ fontSize: 14, fontWeight: 700, color: "#7a8da3", fontFamily: "var(--font-body)" }}>
             발견된 이슈 ({useGeoIssueList ? geoIssues.length : issues.length})
-            {useGeoIssueList && (
-              <span style={{ marginLeft: 8, fontSize: 11, color: "#5b6ef5", fontFamily: "var(--font-mono)" }}>GEO</span>
-            )}
           </div>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
@@ -1728,8 +1706,66 @@ export default function AuditPanel({
                 })
             )}
           </div>
+          {showStrengthOpportunities && (
+            <div style={{ borderTop: "1px solid #1e2d45", paddingTop: 20, marginTop: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "#7a8da3", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  보강 포인트 ({strengthOpportunities.length})
+                </span>
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8, listStyle: "disc" }}>
+                {strengthOpportunities.map((line, i) => (
+                  <li key={`strength-opp-${i}`} style={{ fontSize: 13, color: "#a8b8cc", lineHeight: 1.5 }}>
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* 플랫폼 제약 (네이버 블로그 등): 기술 SEO는 작성자가 직접 수정 불가 */}
+      {platformConstraints && platformConstraints.length > 0 && (
+        <div style={{ ...CARD_STYLE, marginBottom: 10 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#a78bfa",
+              fontFamily: "var(--font-mono)",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              marginBottom: 10,
+            }}
+          >
+            플랫폼 제약
+          </div>
+          <p style={{ fontSize: 11, color: "#7a8da3", lineHeight: 1.5, marginBottom: 10 }}>
+            아래 항목은 호스팅 환경상 직접 수정이 어렵습니다. 감점이 아니라 &quot;조치 불가&quot;에 가깝게 이해하세요.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {platformConstraints.map((c) => (
+              <div
+                key={c.id}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid rgba(167,139,250,0.25)",
+                  background: "rgba(167,139,250,0.06)",
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#ddd6fe", marginBottom: 4 }}>{c.label}</div>
+                <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55, marginBottom: 6 }}>{c.description}</div>
+                <div style={{ fontSize: 12, color: "#5eead4", lineHeight: 1.5 }}>
+                  <span style={{ fontWeight: 600, color: "#7dd3fc" }}>대안 · </span>
+                  {c.alternative}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 5. 개선 기회 — 숨김 when rule-based recommendations exist (actions live in Priority Actions only). */}
       {opportunities.length > 0 && !result.recommendations && (
@@ -1797,7 +1833,7 @@ export default function AuditPanel({
         </div>
       )}
 
-      {/* 6. 콘텐츠 개선 가이드 (요약 → 갭 → 우선 작업 → 소제목 → 블록 → 작성 예시) */}
+      {/* 4. 콘텐츠 개선 가이드 (요약 → 갭 → 우선 작업 → 소제목 → 블록 → 작성 예시) */}
       {result.recommendations && (() => {
         const rec = result.recommendations;
         const improvementSummaryLabel =
@@ -1857,8 +1893,6 @@ export default function AuditPanel({
               color: "#8b9cb3",
               lineHeight: 1.65,
               marginBottom: 12,
-              paddingLeft: 8,
-              borderLeft: "2px solid #1e2d45",
               whiteSpace: "pre-wrap",
             }}
           >
@@ -2089,17 +2123,42 @@ export default function AuditPanel({
         </div>
       )}
 
-      {/* 4. 커버리지 그룹 — optional hide (geoUiFlags) */}
+      {/* 5. 질문 커버리지 — optional hide (geoUiFlags) */}
       <div style={CARD_STYLE}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <Search size={18} style={{ color: "#00d4c8" }} />
             <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
-              질문 커버리지
+              {GEO_REPORT_LABELS_KO.questionCoverageSlideTitle}
             </span>
           </div>
+          {(() => {
+            const qs = result.questionSourceStatus;
+            const externalQuestionDataUnreliable =
+              qs === "fallback_only" || qs === "tavily_failed";
+            return externalQuestionDataUnreliable ? (
+              <div
+                style={{
+                  marginBottom: 10,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border: "1px solid rgba(240,92,122,0.35)",
+                  background: "rgba(240,92,122,0.06)",
+                  fontSize: 12,
+                  color: "#e8b4bf",
+                  lineHeight: 1.45,
+                }}
+              >
+                외부 질문 데이터를 불러오지 못했습니다
+              </div>
+            ) : null;
+          })()}
           <div style={{ maxHeight: 340, overflowY: "auto", marginBottom: 8 }}>
             <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8 }}>
               {(() => {
+                const qs = result.questionSourceStatus;
+                const hideUserSourceLabels = qs === "fallback_only" || qs === "tavily_failed";
+                const showFallbackExamplesHeading = qs === "fallback_only" && (result.searchQuestions?.length ?? 0) > 0;
+
                 const covered = result.searchQuestionCovered ?? result.searchQuestions?.map(() => false) ?? [];
                 const uncoveredTop3Set = new Set(
                   (result.recommendations?.predictedUncoveredTop3 ?? []).map((q) => q.question)
@@ -2135,12 +2194,21 @@ export default function AuditPanel({
                 if (all.length === 0) {
                   return (
                     <li style={{ padding: "12px 10px", fontSize: 12, color: "#7a8da3", fontStyle: "italic" }}>
-                      수집된 질문 없음
+                      {qs === "tavily_failed" || qs === "fallback_only"
+                        ? "표시할 질문이 없습니다"
+                        : "수집된 질문 없음"}
                     </li>
                   );
                 }
 
-                return visible.map((item) => {
+                return (
+                  <>
+                    {showFallbackExamplesHeading && (
+                      <li style={{ listStyle: "none", padding: "4px 2px 0", fontSize: 11, color: "#7a8da3" }}>
+                        관련 질문 예시
+                      </li>
+                    )}
+                    {visible.map((item) => {
                   const isUncovered = item.type === "user" ? !item.isCovered : !item.isCovered;
 
                   return (
@@ -2178,7 +2246,7 @@ export default function AuditPanel({
                           <span style={{ fontSize: 12, color: "#c4d0e0", lineHeight: 1.5 }}>
                             {item.text}
                           </span>
-                          {item.type === "user" && (
+                          {item.type === "user" && !hideUserSourceLabels && (
                             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 2 }}>
                               <span
                                 style={{
@@ -2227,7 +2295,9 @@ export default function AuditPanel({
                       </button>
                     </li>
                   );
-                });
+                })}
+                  </>
+                );
               })()}
             </ul>
           </div>
@@ -2293,7 +2363,7 @@ export default function AuditPanel({
             fontFamily: "var(--font-body)",
           }}
         >
-          {exporting ? "PPT 생성 중..." : "PPT 리포트 다운로드"}
+          {exporting ? GEO_REPORT_LABELS_KO.pptGenerating : GEO_REPORT_LABELS_KO.pptDownloadButton}
         </button>
       </div>
     </aside>

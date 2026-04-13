@@ -519,6 +519,23 @@ export function generateFixExamples(
         },
       ];
 
+    case 'missing_clear_verdict':
+    case 'missing_comparison_logic':
+    case 'weak_claim_evidence':
+    case 'missing_user_context':
+      return [
+        {
+          language: 'markdown',
+          code: [
+            `## 보강 포인트`,
+            `- 상단 또는 하단에 **한 줄 결론/추천**을 명시합니다.`,
+            `- **비교 기준·장단점** 또는 선택 체크리스트를 추가합니다.`,
+            `- 주장마다 **근거·수치·출처**를 붙입니다.`,
+            `- **어떤 독자/상황**에 맞는지 한 단락으로 설명합니다.`,
+          ].join('\n'),
+        },
+      ];
+
     default:
       return [];
   }
@@ -676,6 +693,8 @@ export async function deriveAuditIssues(
   console.log(
     `[deriveAuditIssues] geoIssueSource=${geoIssueSource} geoPassedSource=${geoPassedSource} rulesSource=${rulesSourceLabel} youtubeAllowedIssueIdsSource=${ytAllowResolved.source} issueRulesCount=${issueRulesToUseLen} allowedIssueIdsCount=${skipTextOnlyRules ? ytAllowResolved.ids.length : 0} derivedIssuesCount=${finalIssues.length} skipYouTubeWhitelist=${skipTextOnlyRules} url=${result.url}`
   );
+  
+  console.log('[DEBUG] finalIssueIds:', finalIssues.map((i) => i.id));
 
   for (const issue of finalIssues) {
     const pos = assignPosition(issue.targetSelector, issue.targetIndex);

@@ -1,9 +1,11 @@
 /**
  * GEO 점수 축별 구체적인 평가 기준 (툴팁 등에 사용)
  */
+import { GEO_SCORE_AXIS_LABEL_KO } from "./geoScoreAxisLabels";
+
 export const SCORE_CRITERIA: Record<string, { title: string; items: string[] }> = {
   paragraph: {
-    title: "문단 품질",
+    title: GEO_SCORE_AXIS_LABEL_KO.paragraph,
     items: [
       "정의형 문장 비율 (~이다, ~를 의미한다 등)",
       "적정 길이 문단 비율 (15~80단어)",
@@ -17,7 +19,7 @@ export const SCORE_CRITERIA: Record<string, { title: string; items: string[] }> 
     ],
   },
   answerability: {
-    title: "답변가능성",
+    title: GEO_SCORE_AXIS_LABEL_KO.answerability,
     items: [
       "첫 문단 품질 (30자 이상)",
       "정의/설명 패턴 포함",
@@ -33,7 +35,7 @@ export const SCORE_CRITERIA: Record<string, { title: string; items: string[] }> 
     ],
   },
   structure: {
-    title: "SEO 구조",
+    title: GEO_SCORE_AXIS_LABEL_KO.structure,
     items: [
       "Title 태그 존재",
       "Meta Description 존재·길이 적절",
@@ -47,7 +49,7 @@ export const SCORE_CRITERIA: Record<string, { title: string; items: string[] }> 
     ],
   },
   trust: {
-    title: "신뢰 신호",
+    title: GEO_SCORE_AXIS_LABEL_KO.trust,
     items: [
       "Top Tier 도메인 (화이트리스트 — 네이버, 구글, 위키백과, 다나와 등 30점)",
       "검색 상위 노출 확인 (Tavily 검색 결과에 해당 도메인 포함 시 25점 — 증거 기반)",
@@ -59,7 +61,7 @@ export const SCORE_CRITERIA: Record<string, { title: string; items: string[] }> 
     ],
   },
   citation: {
-    title: "AI 인용 가능성",
+    title: GEO_SCORE_AXIS_LABEL_KO.citation,
     items: [
       "실제 AI 모델이 문단을 인용할 확률 평가",
       "구체적 수치·데이터 포함 여부",

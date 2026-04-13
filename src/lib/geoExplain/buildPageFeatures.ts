@@ -27,6 +27,24 @@ const DEFAULT_TRUST_SIGNALS: TrustSignals = {
   hasAboutLink: false,
 };
 
+/** Concatenate signals for editorial heuristic issue checks (deterministic regex). */
+function buildEditorialHeuristicCorpus(result: AnalysisResult): string | undefined {
+  const parts: string[] = [];
+  const m = result.meta;
+  if (m.title?.trim()) parts.push(m.title);
+  if (m.description?.trim()) parts.push(m.description);
+  if (m.ogTitle?.trim()) parts.push(m.ogTitle);
+  if (m.ogDescription?.trim()) parts.push(m.ogDescription);
+  for (const h of result.headings ?? []) {
+    if (h?.trim()) parts.push(h);
+  }
+  for (const c of result.chunkCitations ?? []) {
+    if (c.text?.trim()) parts.push(c.text);
+  }
+  const s = parts.join('\n').trim();
+  return s.length > 0 ? s.toLowerCase() : undefined;
+}
+
 function metaDescriptionSignals(meta: AnalysisResult['meta']) {
   const hasMetaDescription = !!(meta.description?.trim());
   const hasOgDescription = !!(meta.ogDescription?.trim());
@@ -60,5 +78,6 @@ export function buildPageFeaturesFromResult(result: AnalysisResult): PageFeature
     effectiveDescriptionLength: sig.effectiveDescriptionLength,
     contentQuality: result.contentQuality ?? DEFAULT_CONTENT_QUALITY,
     trustSignals: result.trustSignals ?? DEFAULT_TRUST_SIGNALS,
+    editorialHeuristicCorpus: buildEditorialHeuristicCorpus(result),
   };
 }

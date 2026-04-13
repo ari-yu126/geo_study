@@ -22,6 +22,10 @@ export const ISSUE_RULE_GEO_META: Record<
   content_len: { axis: 'answerability', category: 'weak_signals' },
   content_deep: { axis: 'answerability', category: 'opportunities' },
   blog_low_info_density: { axis: 'answerability', category: 'weak_signals' },
+  missing_clear_verdict: { axis: 'answerability', category: 'weak_signals' },
+  missing_comparison_logic: { axis: 'answerability', category: 'weak_signals' },
+  weak_claim_evidence: { axis: 'citation', category: 'weak_signals' },
+  missing_user_context: { axis: 'answerability', category: 'weak_signals' },
 };
 
 export function resolveIssueRuleMeta(ruleId: string): {

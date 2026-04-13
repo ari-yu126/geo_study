@@ -249,7 +249,9 @@ export interface GeoRecommendations {
 export interface GuideRule {
   id: string;
   /** Issue ids and/or strength (passed) ids that activate this guide when present in the current run. */
-  basedOn: string[];
+  basedOn?: string[];
+  /** Same as `basedOn` — present when config JSON uses snake_case only. */
+  based_on?: string[];
   message: string;
   priority?: 'high' | 'medium' | 'low';
   /** Optional extra priority lines (editorial: merged after `message`, config-first). */
@@ -280,6 +282,46 @@ export interface GuideGenerationDebug {
   };
 }
 
+/** Classifier labels for search-question display priority (heuristic; no LLM). */
+export type SearchQuestionKind =
+  | 'faq'
+  | 'comparison'
+  | 'definition'
+  | 'price'
+  | 'spec'
+  | 'buyer_fit'
+  | 'how_to'
+  | 'summary'
+  | 'timestamp'
+  | 'transactional'
+  | 'unknown';
+
+/**
+ * Profile-driven display / ranking for collected search questions (optional; all fields optional).
+ * Lives under `config_json.profiles[pageType].questionRules`.
+ */
+export interface QuestionDisplayRules {
+  maxDisplayQuestions?: number;
+  topGapCount?: number;
+  preferredQuestionTypes?: SearchQuestionKind[];
+  deprioritizedQuestionTypes?: SearchQuestionKind[];
+  /** Default true when omitted */
+  prioritizeUncovered?: boolean;
+  prioritizeComparisonQuestions?: boolean;
+  minQuestionLength?: number;
+}
+
+/** Optional debug for question coverage display selection (non-breaking). */
+export interface QuestionCoverageDebug {
+  source: 'config' | 'fallback';
+  selectedQuestionTypes: string[];
+  appliedRules?: {
+    maxDisplayQuestions?: number;
+    topGapCount?: number;
+    preferredQuestionTypes?: string[];
+  };
+}
+
 /**
  * Hosting / CMS surface — independent of pageType (editorial/commerce/video) and editorialSubtype.
  * Used for issue guidance and publish-date handling; scoring does not branch on this yet.
@@ -293,6 +335,9 @@ export type PlatformType =
   | 'youtube'
   | 'commerce_platform'
   | 'unknown';
+
+/** Whether user-facing question lines came from Tavily/cache vs quota failure vs local fallback examples */
+export type QuestionSourceStatus = 'tavily_success' | 'tavily_failed' | 'fallback_only';
 
 export interface AnalysisResult {
   /** User-submitted URL (trimmed). Primary UI display; may differ from canonical. */
@@ -320,8 +365,12 @@ export interface AnalysisResult {
   searchEvidence?: SearchQuestion[];
   /** Question-like intents derived for questionCoverage / questionMatch (not raw SERP strings) */
   canonicalSearchQuestions?: SearchQuestion[];
+  /** Tavily/cache vs fallback — controls question-coverage UI (no fake “Google” labels on fallback) */
+  questionSourceStatus?: QuestionSourceStatus;
   searchQuestions: SearchQuestion[];
   searchQuestionCovered?: boolean[];
+  /** When profile `questionRules` applied — how questions were ranked/filtered for display */
+  questionCoverageDebug?: QuestionCoverageDebug;
   questionClusters: QuestionCluster[];
   scores: GeoScores;
   /** Canonical axis snapshot for explainability (same source as scores.* where applicable) */
@@ -653,6 +702,10 @@ export interface GeoScoringConfig {
 
   /** GEO 2.0: 카테고리별 프로필 (editorial / video / commerce / default). 부분만 정의 가능 — 로더는 default 폴백 */
   profiles?: Partial<Record<PageType, GeoScoringProfile>>;
+  /** Optional: shared guide rules at config root (some JSON generators use this instead of profiles.*.guideRules) */
+  guideRules?: GuideRule[];
+  /** Same as guideRules when stored as snake_case in config_json */
+  guide_rules?: GuideRule[];
 }
 
 /** 페이지 타입 — runAnalysis에서 pageType 감지 후 profiles[pageType] 선택 */
@@ -688,6 +741,10 @@ export interface GeoScoringProfile {
   strengthRules?: StrengthRule[];
   /** Optional: config-driven content improvement guide lines (issue/strength id triggers). */
   guideRules?: GuideRule[];
+  /** Same as guideRules when profile JSON uses snake_case only. */
+  guide_rules?: GuideRule[];
+  /** Optional: rank/filter collected search questions for display & recommendation gaps (collection stays in code). */
+  questionRules?: QuestionDisplayRules;
 }
 
 /** Signals for blog/editorial answerability profile only (see editorialBlogAnswerability.ts) */
@@ -794,4 +851,9 @@ export interface PageFeatures {
    * not an extraction change. Kept separate from questionCoverage (Tavily coverage %).
    */
   questionMatchScore?: number;
+  /**
+   * Lowercased text bundle (meta + headings + citation chunks) for editorial-only heuristic checks.
+   * Does not affect commerce scoring math.
+   */
+  editorialHeuristicCorpus?: string;
 }

@@ -12,14 +12,15 @@ export const en = {
       'No hard blockers. Tighten summaries, headings, answers to common questions, and sources.',
   },
   gap: {
-    paragraph: 'The opening summary is weak and the body reads long.',
-    structure: 'Headings and a short outline are hard to see.',
-    questionCoverage: 'The page does not answer common reader questions directly.',
-    questionMatch: 'Search question phrases do not show clearly in titles or body text.',
-    citation: 'There are few short lines with numbers, sources, or clear facts.',
-    trust: 'Author, dates, sources, or contact details are missing or hard to find.',
-    videoMetadata: 'The description needs chapters, a short summary, or FAQ lines.',
-    issuesFooter: (n: number) => `${n} related items also appear in the detailed list.`,
+    paragraph:
+      'Add a 3–4 line top summary and break long body copy into H2/H3 sections for scanability.',
+    structure: 'Add a one-line overview up top and use H2/H3 headings to show the flow.',
+    questionCoverage: 'Add FAQ or Q/A pairs that answer common questions directly.',
+    questionMatch: 'Reuse frequent search question phrases as section headings (H2/H3).',
+    citation: 'Add more short lines that show numbers, units, or sources.',
+    trust: 'Group author, dates, reference links, and contact in one block.',
+    videoMetadata: 'Add chapters, a short summary, and FAQ Q/A lines to the description.',
+    none: 'No additional content completion points stand out under current signals.',
   },
   headings: {
     faq: 'FAQ',

@@ -14,6 +14,7 @@ import { deriveAuditIssues } from "@/lib/issueDetector";
 import AuditPanel from "./components/AuditPanel";
 import AuditMarker from "./components/AuditMarker";
 import { GEO_UI_HIDE_COVERAGE_AND_PPT } from "./geoUiFlags";
+import { GEO_REPORT_LABELS_KO } from "./utils/geoReportLabels";
 
 type Status = "idle" | "loading" | "success" | "error";
 
@@ -432,7 +433,7 @@ export default function Home() {
     setExporting(true);
     try {
       const { exportToPPT } = await import("./utils/pptExporter");
-      await exportToPPT(result);
+      await exportToPPT(result, { passedChecks, auditIssues: issues });
     } catch (e) {
       alert("PPT 생성 오류: " + (e as Error).message);
     } finally {
@@ -775,17 +776,13 @@ export default function Home() {
             { icon: "🔍", label: "사이트 오버레이" },
             { icon: "❓", label: "이슈 마커" },
             { icon: "💡", label: "개선 가이드" },
-            ...(GEO_UI_HIDE_COVERAGE_AND_PPT ? [] : [{ icon: "📊", label: "PPT 리포트" }]),
+            ...(GEO_UI_HIDE_COVERAGE_AND_PPT ? [] : [{ icon: "📊", label: GEO_REPORT_LABELS_KO.pptFeatureLabel }]),
           ].map((f) => (
             <span key={f.label} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", borderRadius: 99, background: "rgba(15,22,35,0.6)", border: "1px solid #1e2d45", fontSize: 14, color: "#8b9cb3" }}>
               {f.icon} {f.label}
             </span>
           ))}
         </div>
-
-        <p className="animate-fade-up" style={{ animationDelay: "280ms", textAlign: "center", fontSize: 14, color: "#6d8099", marginTop: 20, fontFamily: "var(--font-mono)" }}>
-          사이트를 실시간 프리뷰하며 부족한 부분을 표시합니다
-        </p>
       </div>
     </div>
   );

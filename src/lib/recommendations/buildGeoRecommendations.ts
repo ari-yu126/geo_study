@@ -3,7 +3,9 @@ import type {
   GeoRecommendationTrace,
   GeoRecommendationTraceEntry,
   GeoRecommendations,
+  GeoScoringConfig,
 } from '../analysisTypes';
+import { logGuideConfigBoundary } from '../scoringConfigLoader';
 import { refineEditorialTrendSummaryForSubtype, refineGeminiEditorialTrendSummary } from '../geoExplain/editorialSubtypeWording';
 import type { RecommendationContext } from './recommendationContext';
 import {
@@ -17,6 +19,11 @@ import { buildCommerceHeadingsAndBlocks } from './rules/commerceRules';
 import { buildVideoHeadingsAndBlocks } from './rules/videoRules';
 import { ko } from './templates/ko';
 import { en } from './templates/en';
+import {
+  poolLimitForPredictedQuestions,
+  predictedQuestionCap,
+  topGapCountFromRules,
+} from '../questionDisplaySelection';
 
 function Tmpl(ctx: RecommendationContext) {
   return ctx.locale === 'ko' ? ko : en;
@@ -47,8 +54,15 @@ function appendTrace(
 /**
  * Deterministic content guide: internal analysis inputs → user-facing recommendations (no score copy).
  * Trace entries use internal ids for debugging only; strings shown in UI come from templates.
+ * @param scoringConfigForGuideTrace optional — when passed, GEO_GUIDE_CONFIG_TRACE=1 logs profiles at entry (no scoring behavior change).
  */
-export function buildGeoRecommendationsFromSignals(ctx: RecommendationContext): GeoRecommendations {
+export function buildGeoRecommendationsFromSignals(
+  ctx: RecommendationContext,
+  scoringConfigForGuideTrace?: GeoScoringConfig
+): GeoRecommendations {
+  if (scoringConfigForGuideTrace) {
+    logGuideConfigBoundary('buildGeoRecommendationsFromSignals entry', ctx.pageType, scoringConfigForGuideTrace);
+  }
   const t = Tmpl(ctx);
   const entries: GeoRecommendationTraceEntry[] = [];
 
@@ -84,29 +98,26 @@ export function buildGeoRecommendationsFromSignals(ctx: RecommendationContext): 
   }
 
   const gapAxisParts = collectAxisGapParts(ctx);
-  const gapTexts = gapAxisParts.map((p) => p.text);
-  gapAxisParts.forEach((p) => appendTrace(entries, 'contentGapSummary', p.sources));
-
-  /** Problem-only lines (max MAX_CONTENT_GAPS); optional issue-list note only if room left. */
-  let contentGapSummary = gapTexts.map((line) => `- ${line}`).join('\n').trim();
-  const gapLineCount = gapTexts.length;
-  if (ctx.geoIssues.length > 0) {
-    if (gapLineCount < MAX_CONTENT_GAPS) {
-      const footer = t.gap.issuesFooter(ctx.geoIssues.length);
-      contentGapSummary = contentGapSummary ? `${contentGapSummary}\n- ${footer}` : `- ${footer}`;
+  /** Actionable gap lines: low axes first, then concrete `fix`/`label` from geo issues (no vague footer). */
+  const gapParts: { text: string; sources: string[] }[] = [...gapAxisParts];
+  if (gapParts.length < MAX_CONTENT_GAPS && ctx.geoIssues.length > 0) {
+    const seen = new Set(gapParts.map((p) => p.text.trim().toLowerCase()));
+    for (const iss of ctx.geoIssues) {
+      if (gapParts.length >= MAX_CONTENT_GAPS) break;
+      const line = iss.fix?.trim() || iss.label?.trim();
+      if (!line) continue;
+      const key = line.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      gapParts.push({ text: line, sources: [`issue:${iss.id}`] });
     }
-    appendTrace(
-      entries,
-      'contentGapSummary',
-      ctx.geoIssues.slice(0, 8).map((i) => `issue:${i.id}`)
-    );
   }
+  gapParts.forEach((p) => appendTrace(entries, 'contentGapSummary', p.sources));
+
+  let contentGapSummary = gapParts.map((p) => `- ${p.text}`).join('\n').trim();
   if (!contentGapSummary) {
-    contentGapSummary =
-      ctx.locale === 'ko'
-        ? '추가로 짚을 만한 빈칸은 많지 않습니다. 본문과 질문이 더 보이면 구체적인 팁을 드릴 수 있습니다.'
-        : 'Not much seems missing beyond what follows. More page text and questions will allow sharper tips.';
-    appendTrace(entries, 'contentGapSummary', ['rule:gap_fallback']);
+    contentGapSummary = `- ${t.gap.none}`;
+    appendTrace(entries, 'contentGapSummary', ['rule:gap_none']);
   }
 
   let headingItems: { text: string; sources: string[] }[] = [];
@@ -144,14 +155,18 @@ export function buildGeoRecommendationsFromSignals(ctx: RecommendationContext): 
   });
 
   const texts = ctx.uncoveredQuestions.map((q) => q.text).filter(Boolean);
-  const top6 = texts.slice(0, 6);
-  const predictedQuestions: GeoPredictedQuestion[] = top6.slice(0, 5).map((q, i) => ({
+  const rules = ctx.questionRules;
+  const poolLimit = Math.min(texts.length, poolLimitForPredictedQuestions(rules));
+  const topPool = texts.slice(0, poolLimit);
+  const predictedCap = Math.min(predictedQuestionCap(rules), topPool.length);
+  const topGapN = Math.min(topGapCountFromRules(rules), predictedCap);
+  const predictedQuestions: GeoPredictedQuestion[] = topPool.slice(0, predictedCap).map((q, i) => ({
     question: q,
     importanceReason: t.predictedReason,
     coveredByPage: false,
-    isTopGap: i < 3,
+    isTopGap: i < topGapN,
   }));
-  const predictedUncoveredTop3 = predictedQuestions.filter((_, i) => i < 3);
+  const predictedUncoveredTop3 = predictedQuestions.filter((_, i) => i < topGapN);
   if (predictedQuestions.length > 0) {
     appendTrace(entries, 'predictedQuestions', ['signal:uncovered_questions']);
   }

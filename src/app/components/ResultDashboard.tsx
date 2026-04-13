@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { AnalysisResult } from "@/lib/analysisTypes";
 import { SCORE_CRITERIA } from "@/lib/scoreCriteria";
 import ScoreGauge, { getGradeInfo } from "./ScoreGauge";
+import { GEO_SCORE_AXIS_LABEL_KO } from "@/lib/geoScoreAxisLabels";
 import CategoryBar from "./CategoryBar";
 import Sidebar from "./Sidebar";
 import References from "./References";
@@ -25,25 +26,26 @@ type TabId = (typeof TABS)[number]["id"];
 function buildCategories(result: AnalysisResult) {
   const { scores } = result;
   const hasCitation = (scores.citationScore ?? -1) >= 0;
+  const L = GEO_SCORE_AXIS_LABEL_KO;
 
   const withCriteria = (arr: { id: string; label: string; icon: string; score: number; maxScore: number; color: string }[]) =>
     arr.map((cat) => ({ ...cat, criteriaItems: SCORE_CRITERIA[cat.id]?.items }));
 
   if (hasCitation) {
     return withCriteria([
-      { id: "citation", label: "AI 인용 가능성", icon: "🤖", score: Math.round((scores.citationScore ?? 0) * 0.40), maxScore: 40, color: "#a855f7" },
-      { id: "paragraph", label: "문단 품질", icon: "📝", score: Math.round((scores.paragraphScore ?? 0) * 0.15), maxScore: 15, color: "#5b6ef5" },
-      { id: "answerability", label: "답변가능성", icon: "💡", score: Math.round((scores.answerabilityScore ?? 0) * 0.15), maxScore: 15, color: "#00d4c8" },
-      { id: "structure", label: "SEO 구조", icon: "📐", score: Math.round(scores.structureScore * 0.15), maxScore: 15, color: "#34d399" },
-      { id: "trust", label: "신뢰 신호", icon: "🛡️", score: Math.round((scores.trustScore ?? 0) * 0.15), maxScore: 15, color: "#f5a623" },
+      { id: "citation", label: L.citation, icon: "🤖", score: Math.round((scores.citationScore ?? 0) * 0.40), maxScore: 40, color: "#a855f7" },
+      { id: "paragraph", label: L.paragraph, icon: "📝", score: Math.round((scores.paragraphScore ?? 0) * 0.15), maxScore: 15, color: "#5b6ef5" },
+      { id: "answerability", label: L.answerability, icon: "💡", score: Math.round((scores.answerabilityScore ?? 0) * 0.15), maxScore: 15, color: "#00d4c8" },
+      { id: "structure", label: L.structure, icon: "📐", score: Math.round(scores.structureScore * 0.15), maxScore: 15, color: "#34d399" },
+      { id: "trust", label: L.trust, icon: "🛡️", score: Math.round((scores.trustScore ?? 0) * 0.15), maxScore: 15, color: "#f5a623" },
     ]);
   }
 
   return withCriteria([
-    { id: "paragraph", label: "문단 품질", icon: "📝", score: Math.round((scores.paragraphScore ?? 0) * 0.35), maxScore: 35, color: "#5b6ef5" },
-    { id: "answerability", label: "답변가능성", icon: "💡", score: Math.round((scores.answerabilityScore ?? 0) * 0.25), maxScore: 25, color: "#00d4c8" },
-    { id: "structure", label: "SEO 구조", icon: "📐", score: Math.round(scores.structureScore * 0.20), maxScore: 20, color: "#34d399" },
-    { id: "trust", label: "신뢰 신호", icon: "🛡️", score: Math.round((scores.trustScore ?? 0) * 0.15), maxScore: 15, color: "#f5a623" },
+    { id: "paragraph", label: L.paragraph, icon: "📝", score: Math.round((scores.paragraphScore ?? 0) * 0.35), maxScore: 35, color: "#5b6ef5" },
+    { id: "answerability", label: L.answerability, icon: "💡", score: Math.round((scores.answerabilityScore ?? 0) * 0.25), maxScore: 25, color: "#00d4c8" },
+    { id: "structure", label: L.structure, icon: "📐", score: Math.round(scores.structureScore * 0.20), maxScore: 20, color: "#34d399" },
+    { id: "trust", label: L.trust, icon: "🛡️", score: Math.round((scores.trustScore ?? 0) * 0.15), maxScore: 15, color: "#f5a623" },
   ]);
 }
 

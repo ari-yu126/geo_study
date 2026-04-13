@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { AnalysisResult } from "@/lib/analysisTypes";
 import { isHostedBlogPlatform } from "@/lib/geoExplain/platformIssueWording";
+import { GEO_REPORT_LABELS_KO } from "../utils/geoReportLabels";
 
 interface SidebarProps {
   result: AnalysisResult;
@@ -11,9 +12,9 @@ interface SidebarProps {
 }
 
 const PRIORITY_MAP = {
-  high: { label: "긴급", color: "#f05c7a", bg: "rgba(240,92,122,0.1)", border: "rgba(240,92,122,0.3)" },
-  medium: { label: "보통", color: "#f5a623", bg: "rgba(245,166,35,0.1)", border: "rgba(245,166,35,0.3)" },
-  low: { label: "낮음", color: "#34d399", bg: "rgba(52,211,153,0.1)", border: "rgba(52,211,153,0.3)" },
+  high: { label: GEO_REPORT_LABELS_KO.tipPriorityHigh, color: "#f05c7a", bg: "rgba(240,92,122,0.1)", border: "rgba(240,92,122,0.3)" },
+  medium: { label: GEO_REPORT_LABELS_KO.tipPriorityMedium, color: "#f5a623", bg: "rgba(245,166,35,0.1)", border: "rgba(245,166,35,0.3)" },
+  low: { label: GEO_REPORT_LABELS_KO.tipPriorityLow, color: "#34d399", bg: "rgba(52,211,153,0.1)", border: "rgba(52,211,153,0.3)" },
 };
 
 function deriveImprovements(result: AnalysisResult) {
@@ -201,7 +202,7 @@ export default function Sidebar({ result, onExportPPT, exporting }: SidebarProps
             fontFamily: "var(--font-body)",
           }}
         >
-          {exporting ? "PPT 생성 중..." : "PPT 리포트 다운로드"}
+          {exporting ? GEO_REPORT_LABELS_KO.pptGenerating : GEO_REPORT_LABELS_KO.pptDownloadButton}
         </button>
         <p style={{ fontSize: 12, color: "#7a8da3", textAlign: "center", marginTop: 6 }}>
           7슬라이드 자동 생성 · .pptx 형식

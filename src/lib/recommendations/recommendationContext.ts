@@ -1,4 +1,13 @@
-import type { ContentQuality, EditorialSubtype, GeoAxisScores, GeoIssue, GeoOpportunity, PageType, SearchQuestion } from '../analysisTypes';
+import type {
+  ContentQuality,
+  EditorialSubtype,
+  GeoAxisScores,
+  GeoIssue,
+  GeoOpportunity,
+  PageType,
+  QuestionDisplayRules,
+  SearchQuestion,
+} from '../analysisTypes';
 
 export type RecommendationLocale = 'ko' | 'en';
 
@@ -23,4 +32,6 @@ export interface RecommendationContext {
   contentQuality: ContentQuality | null;
   reviewSignals: ReviewSignals;
   limitedAnalysis: boolean;
+  /** Profile `questionRules` — display/ranking for gaps & predicted questions */
+  questionRules?: QuestionDisplayRules | null;
 }

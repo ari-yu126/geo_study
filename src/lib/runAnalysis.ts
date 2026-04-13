@@ -8,18 +8,27 @@ import {
   type EditorialCitationFallbackResult,
 } from './videoScoreFallback';
 import { extractSeedKeywords } from './keywordExtractor';
-import { fetchSearchQuestions, derivePrimaryTopic } from './searchQuestions';
+import {
+  fetchSearchQuestions,
+  derivePrimaryTopic,
+  deriveQuestionSourceStatus,
+  logQuestionSourceStatus,
+} from './searchQuestions';
 import { buildCanonicalSearchQuestions } from './canonicalSearchQuestions';
 import { buildCoverageMatchInput, buildCoverageMatchInputPlain } from './coverageSurfaces';
-import type { CoverageMatchInput } from './coverageSurfaces';
-import { filterQuestionsByPageRelevance, type FilterQuestionsRunMeta } from './questionFilter';
-import { getProfileForPageType, loadActiveScoringConfig } from './scoringConfigLoader';
+import type { FilterQuestionsRunMeta } from './questionFilter';
+import {
+  getProfileForPageType,
+  loadActiveScoringConfig,
+  logGuideConfigBoundary,
+} from './scoringConfigLoader';
 import { evaluateCheck } from './checkEvaluator';
 import { analyzeParagraphs, computeBlogRelaxedParagraphScore, paragraphStatsToScore } from './paragraphAnalyzer';
 import { extractChunks, evaluateCitations, citationsToScore } from './citationEvaluator';
 import { deriveAuditIssues } from './issueDetector';
 import { buildAxisScores, logGeoExplainDebug } from './geoExplain';
 import { generateGeoRecommendations } from './recommendationEngine';
+import { DEFAULT_SCORING_CONFIG } from './defaultScoringConfig';
 import { detectEditorialSubtype } from './editorialSubtype';
 import { hasDomainAuthority } from './domainAuthority';
 import { checkActualAiCitation, hasActualAiCitationDomain, type CheckActualAiCitationMeta } from './actualAiCitation';
@@ -27,8 +36,16 @@ import { fetchYouTubeMetadata, fetchYouTubeOEmbed, isYouTubeUrl, youtubeMetadata
 import {
   computeQuestionMatchScore,
   computeSearchQuestionCoverage,
+  computeSearchQuestionCoverageDetails,
   softenQuestionMatchForEditorialBlog,
 } from './questionCoverage';
+import { logQuestionCoverageTrace, shouldLogQuestionCoverageTrace } from './questionCoverageTrace';
+import { logQuestionCoverageStagesDebug, logQuestionPipelineStage } from './questionPipelineTrace';
+import {
+  applySearchQuestionsFallbackIfEmpty,
+  whenDisplayEmptyUseCanonical,
+} from './questionCoverageFallback';
+import { applyQuestionDisplaySelection } from './questionDisplaySelection';
 import type {
   AnalysisResult,
   AnalysisMeta,
@@ -94,14 +111,6 @@ function detectFaqLikePage(params: {
   return questionHeadings.length / Math.max(1, params.headings.length) >= 0.3;
 }
 
-function findUncoveredQuestions(
-  canonicalSearchQuestions: SearchQuestion[],
-  coverageInput: CoverageMatchInput
-): SearchQuestion[] {
-  const covered = computeSearchQuestionCoverage(canonicalSearchQuestions, coverageInput);
-  return canonicalSearchQuestions.filter((_, i) => !covered[i]);
-}
-
 /** Set GEO_SCORE_AXIS_DEBUG=1; optional GEO_SCORE_AXIS_URL=rtings.com to filter by URL substring */
 function shouldLogGeoScoreAxis(targetUrl: string): boolean {
   if (process.env.GEO_SCORE_AXIS_DEBUG !== '1') return false;
@@ -114,8 +123,19 @@ function shouldLogGeoScoreAxis(targetUrl: string): boolean {
   }
 }
 
+/** YouTube Tavily path: set VIDEO_TAVILY_TRACE=1 or TAVILY_EXECUTION_DEBUG=1 */
+function logVideoTavilyCheckpoint(payload: Record<string, unknown>): void {
+  if (process.env.VIDEO_TAVILY_TRACE !== '1' && process.env.TAVILY_EXECUTION_DEBUG !== '1') return;
+  console.log(
+    '[VIDEO_TAVILY]',
+    JSON.stringify({ ts: new Date().toISOString(), ...payload })
+  );
+}
+
 export interface RunAnalysisOptions {
   appOrigin?: string;
+  /** When true, bypass question-research cache read (align with /api/analyze forceRefresh). */
+  forceRefresh?: boolean;
 }
 
 export async function runAnalysis(url: string, options?: RunAnalysisOptions): Promise<AnalysisResult> {
@@ -200,6 +220,13 @@ async function runAnalysisImpl(
         console.log('[VIDEO] geminiResult is null — Gemini video analysis failed/skipped');
       }
 
+      logVideoTavilyCheckpoint({
+        phase: 'youtube_branch_gemini_outcome',
+        normalizedUrl,
+        geminiResultPresent: !!geminiResult,
+        nextPath: geminiResult ? 'fetchSearchQuestions_with_gemini_enhanced_content' : 'fetchSearchQuestions_gemini_null_fallback',
+      });
+
       const effectiveContent = geminiResult
         ? (() => {
             const summaryLines = [geminiResult.coreTopic, geminiResult.successFactor].filter(Boolean);
@@ -215,32 +242,66 @@ async function runAnalysisImpl(
         // 4) Tavily 질문 수집 (video profile)
         const seedKeywords = extractSeedKeywords(meta, [], enhancedContentText);
 
-        const rawSearchQuestions = await fetchSearchQuestions(seedKeywords, {
+        logVideoTavilyCheckpoint({
+          phase: 'before_fetchSearchQuestions',
+          branch: 'gemini_ok',
+          normalizedUrl,
+          seedKeywordsCount: seedKeywords.length,
+          forceRefresh: options?.forceRefresh === true,
+          skipQuestionResearchCache: options?.forceRefresh === true,
+        });
+
+        const videoFetchPack = await fetchSearchQuestions(seedKeywords, {
           pageType: 'video',
           meta: { title: meta.title, ogTitle: meta.ogTitle },
           url,
+          skipQuestionResearchCache: options?.forceRefresh === true,
+        });
+        const tavilyMetaVideo = videoFetchPack.tavilyMeta;
+        const rawSearchQuestions = videoFetchPack.questions;
+
+        logVideoTavilyCheckpoint({
+          phase: 'after_fetchSearchQuestions',
+          branch: 'gemini_ok',
+          normalizedUrl,
+          returnedSearchQuestionCount: rawSearchQuestions.length,
         });
         const topic = derivePrimaryTopic({ title: meta.title, ogTitle: meta.ogTitle }, url, seedKeywords, 'video');
-        const fqVideo = await filterQuestionsByPageRelevance(
-          rawSearchQuestions,
-          meta.title ?? null,
-          enhancedContentText.slice(0, 2000),
-          {
-            pageType: 'video',
-            primaryPhrase: topic.primaryPhrase,
-            essentialTokens: topic.essentialTokens,
-            isEnglishPage: topic.isEnglishPage,
-          }
-        );
-        let searchEvidence = fqVideo.questions;
-        if (!searchEvidence.length) searchEvidence = rawSearchQuestions.slice(0, 10);
+        const searchEvidence = rawSearchQuestions;
 
-        const searchQuestions = buildCanonicalSearchQuestions({
+        const videoCountAfterFetch = rawSearchQuestions.length;
+        let searchQuestions = buildCanonicalSearchQuestions({
           evidence: searchEvidence,
           seedKeywords,
           meta: { title: meta.title, ogTitle: meta.ogTitle },
           topic,
           pageType: 'video',
+        });
+        const videoCountAfterPage = searchEvidence.length;
+        const videoCanonicalCountBeforeFallback = searchQuestions.length;
+        const videoFbApplied = applySearchQuestionsFallbackIfEmpty(searchQuestions, {
+          normalizedUrl,
+          pageType: 'video',
+          primaryPhrase: topic.primaryPhrase,
+          essentialTokens: topic.essentialTokens,
+          seedKeywords,
+          isEnglishPage: topic.isEnglishPage,
+          debugCounts: {
+            afterFetchTopicQuality: videoCountAfterFetch,
+            afterPageRelevanceFilter: videoCountAfterPage,
+            afterCanonicalBeforeFallback: videoCanonicalCountBeforeFallback,
+          },
+        });
+        searchQuestions = videoFbApplied.searchQuestions;
+        const questionSourceStatusVideo = deriveQuestionSourceStatus(
+          tavilyMetaVideo,
+          videoFbApplied.fallbackUsed
+        );
+        logQuestionSourceStatus({
+          normalizedUrl,
+          questionSourceStatus: questionSourceStatusVideo,
+          tavilyMeta: tavilyMetaVideo,
+          fallbackUsed: videoFbApplied.fallbackUsed,
         });
 
         const pageQuestions = meta.title ? [meta.title] : [];
@@ -250,8 +311,6 @@ async function runAnalysisImpl(
           pageQuestions,
           topicTokens: topic.essentialTokens,
         });
-        const top10 = searchQuestions.slice(0, 10);
-        const uncoveredQuestions = findUncoveredQuestions(top10, videoCoverageInput);
 
         console.log('[VIDEO Q]', {
           raw: rawSearchQuestions.length,
@@ -304,8 +363,38 @@ async function runAnalysisImpl(
         };
         logGeoExplainDebug(url, coreResult.pageType, geoExplainVideo);
 
+        const videoQuestionRules = getProfileForPageType(activeScoringConfig, 'video')?.questionRules;
+        const fullVideoQs = coreResult.searchQuestions ?? [];
+        let videoCov = coreResult.searchQuestionCovered ?? [];
+        if (videoCov.length !== fullVideoQs.length) {
+          videoCov =
+            fullVideoQs.length > 0
+              ? computeSearchQuestionCoverage(fullVideoQs, videoCoverageInput)
+              : [];
+        }
+        let videoDisplayApplied = applyQuestionDisplaySelection({
+          searchQuestions: fullVideoQs,
+          searchQuestionCovered: videoCov,
+          questionRules: videoQuestionRules,
+        });
+        videoDisplayApplied = whenDisplayEmptyUseCanonical(videoDisplayApplied, fullVideoQs, videoCov);
+        coreResult.canonicalSearchQuestions = [...fullVideoQs];
+        coreResult.searchQuestions = videoDisplayApplied.searchQuestions;
+        coreResult.searchQuestionCovered = videoDisplayApplied.searchQuestionCovered;
+        if (videoDisplayApplied.debug) {
+          coreResult.questionCoverageDebug = videoDisplayApplied.debug;
+        }
+        const uncoveredQuestions = videoDisplayApplied.uncoveredOrderedForRecommendations;
+
+        logGuideConfigBoundary('runAnalysis before generateGeoRecommendations', 'video', activeScoringConfig);
+        console.log('[RUNANALYSIS -> GUIDE]', {
+          pageType: 'video',
+          passedConfigVersion: activeScoringConfig?.version,
+          passedProfileKeys: Object.keys(activeScoringConfig?.profiles ?? {}),
+          isDefaultSingleton: activeScoringConfig === DEFAULT_SCORING_CONFIG,
+        });
         const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
-          searchQuestions: coreResult.searchQuestions,
+          searchQuestions: videoDisplayApplied.searchQuestions,
           pageQuestions: coreResult.pageQuestions,
           pageType: 'video',
           geoOpportunities: opportunities,
@@ -322,13 +411,16 @@ async function runAnalysisImpl(
           contentQuality: coreResult.contentQuality,
           limitedAnalysis: coreResult.limitedAnalysis,
           seedKeywords: coreResult.seedKeywords,
+          questionRules: videoQuestionRules,
+          activeScoringConfig,
         });
     
         return {
           ...coreResult,
           geoConfigVersion,
           searchEvidence,
-          canonicalSearchQuestions: searchQuestions,
+          questionSourceStatus: questionSourceStatusVideo,
+          canonicalSearchQuestions: coreResult.canonicalSearchQuestions ?? fullVideoQs,
           recommendations,
           passedChecks,
           platformConstraints,
@@ -339,31 +431,66 @@ async function runAnalysisImpl(
 
       // geminiResult == null: 규칙 기반 fallback citation으로 video 결과 생성
       const seedKeywords = extractSeedKeywords(meta, [], effectiveContent);
-      const rawSearchQuestions = await fetchSearchQuestions(seedKeywords, {
+
+      logVideoTavilyCheckpoint({
+        phase: 'before_fetchSearchQuestions',
+        branch: 'gemini_null_fallback',
+        normalizedUrl,
+        seedKeywordsCount: seedKeywords.length,
+        forceRefresh: options?.forceRefresh === true,
+        skipQuestionResearchCache: options?.forceRefresh === true,
+      });
+
+      const videoFetchPackFb = await fetchSearchQuestions(seedKeywords, {
         pageType: 'video',
         meta: { title: meta.title, ogTitle: meta.ogTitle },
         url,
+        skipQuestionResearchCache: options?.forceRefresh === true,
+      });
+      const tavilyMetaVideoFb = videoFetchPackFb.tavilyMeta;
+      const rawSearchQuestions = videoFetchPackFb.questions;
+
+      logVideoTavilyCheckpoint({
+        phase: 'after_fetchSearchQuestions',
+        branch: 'gemini_null_fallback',
+        normalizedUrl,
+        returnedSearchQuestionCount: rawSearchQuestions.length,
       });
       const topicFb = derivePrimaryTopic({ title: meta.title, ogTitle: meta.ogTitle }, url, seedKeywords, 'video');
-      const fqVideoFb = await filterQuestionsByPageRelevance(
-        rawSearchQuestions,
-        meta.title ?? null,
-        effectiveContent.slice(0, 2000),
-        {
-          pageType: 'video',
-          primaryPhrase: topicFb.primaryPhrase,
-          essentialTokens: topicFb.essentialTokens,
-          isEnglishPage: topicFb.isEnglishPage,
-        }
-      );
-      let searchEvidence = fqVideoFb.questions;
-      if (!searchEvidence.length) searchEvidence = rawSearchQuestions.slice(0, 10);
-      const searchQuestions = buildCanonicalSearchQuestions({
+      const searchEvidence = rawSearchQuestions;
+      const videoFbCountAfterFetch = rawSearchQuestions.length;
+      let searchQuestions = buildCanonicalSearchQuestions({
         evidence: searchEvidence,
         seedKeywords,
         meta: { title: meta.title, ogTitle: meta.ogTitle },
         topic: topicFb,
         pageType: 'video',
+      });
+      const videoFbCountAfterPage = searchEvidence.length;
+      const videoFbCanonicalCountBeforeFallback = searchQuestions.length;
+      const videoFbAppliedNull = applySearchQuestionsFallbackIfEmpty(searchQuestions, {
+        normalizedUrl,
+        pageType: 'video',
+        primaryPhrase: topicFb.primaryPhrase,
+        essentialTokens: topicFb.essentialTokens,
+        seedKeywords,
+        isEnglishPage: topicFb.isEnglishPage,
+        debugCounts: {
+          afterFetchTopicQuality: videoFbCountAfterFetch,
+          afterPageRelevanceFilter: videoFbCountAfterPage,
+          afterCanonicalBeforeFallback: videoFbCanonicalCountBeforeFallback,
+        },
+      });
+      searchQuestions = videoFbAppliedNull.searchQuestions;
+      const questionSourceStatusVideoFb = deriveQuestionSourceStatus(
+        tavilyMetaVideoFb,
+        videoFbAppliedNull.fallbackUsed
+      );
+      logQuestionSourceStatus({
+        normalizedUrl,
+        questionSourceStatus: questionSourceStatusVideoFb,
+        tavilyMeta: tavilyMetaVideoFb,
+        fallbackUsed: videoFbAppliedNull.fallbackUsed,
       });
       const pageQuestions = meta.title ? [meta.title] : [];
       const videoCoverageInputFb = buildCoverageMatchInputPlain({
@@ -430,10 +557,37 @@ async function runAnalysisImpl(
         opportunities: oppsFb,
       };
       logGeoExplainDebug(url, coreResult.pageType, geoExplainVideoFb);
-      const top10 = searchQuestions.slice(0, 10);
-      const uncoveredQuestions = findUncoveredQuestions(top10, videoCoverageInputFb);
+      const videoQuestionRulesFb = getProfileForPageType(activeScoringConfig, 'video')?.questionRules;
+      const fullVideoQsFb = coreResult.searchQuestions ?? [];
+      let videoCovFb = coreResult.searchQuestionCovered ?? [];
+      if (videoCovFb.length !== fullVideoQsFb.length) {
+        videoCovFb =
+          fullVideoQsFb.length > 0
+            ? computeSearchQuestionCoverage(fullVideoQsFb, videoCoverageInputFb)
+            : [];
+      }
+      let videoDisplayFb = applyQuestionDisplaySelection({
+        searchQuestions: fullVideoQsFb,
+        searchQuestionCovered: videoCovFb,
+        questionRules: videoQuestionRulesFb,
+      });
+      videoDisplayFb = whenDisplayEmptyUseCanonical(videoDisplayFb, fullVideoQsFb, videoCovFb);
+      coreResult.canonicalSearchQuestions = [...fullVideoQsFb];
+      coreResult.searchQuestions = videoDisplayFb.searchQuestions;
+      coreResult.searchQuestionCovered = videoDisplayFb.searchQuestionCovered;
+      if (videoDisplayFb.debug) {
+        coreResult.questionCoverageDebug = videoDisplayFb.debug;
+      }
+      const uncoveredQuestions = videoDisplayFb.uncoveredOrderedForRecommendations;
+      logGuideConfigBoundary('runAnalysis before generateGeoRecommendations', 'video', activeScoringConfig);
+      console.log('[RUNANALYSIS -> GUIDE]', {
+        pageType: 'video',
+        passedConfigVersion: activeScoringConfig?.version,
+        passedProfileKeys: Object.keys(activeScoringConfig?.profiles ?? {}),
+        isDefaultSingleton: activeScoringConfig === DEFAULT_SCORING_CONFIG,
+      });
       const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
-        searchQuestions: coreResult.searchQuestions,
+        searchQuestions: videoDisplayFb.searchQuestions,
         pageQuestions: coreResult.pageQuestions,
         pageType: 'video',
         geoOpportunities: oppsFb,
@@ -450,12 +604,15 @@ async function runAnalysisImpl(
         contentQuality: coreResult.contentQuality,
         limitedAnalysis: coreResult.limitedAnalysis,
         seedKeywords: coreResult.seedKeywords,
+        questionRules: videoQuestionRulesFb,
+        activeScoringConfig,
       });
       return {
         ...coreResult,
         geoConfigVersion,
         searchEvidence,
-        canonicalSearchQuestions: searchQuestions,
+        questionSourceStatus: questionSourceStatusVideoFb,
+        canonicalSearchQuestions: coreResult.canonicalSearchQuestions ?? fullVideoQsFb,
         recommendations,
         passedChecks,
         platformConstraints: platformConstraintsFb,
@@ -561,30 +718,72 @@ async function runAnalysisImpl(
       pageType
     );
 
-    let searchEvidence = await fetchSearchQuestions(seedKeywords, {
+    const editorialQuestionFetch = await fetchSearchQuestions(seedKeywords, {
       meta: { title: meta.title, ogTitle: meta.ogTitle },
       url,
+      skipQuestionResearchCache: options?.forceRefresh === true,
     });
-    const fqEditorial = await filterQuestionsByPageRelevance(
-      searchEvidence,
-      meta.title,
-      contentForAnalysis.slice(0, 2000),
-      {
-        pageType: 'editorial',
-        primaryPhrase: primaryTopicForCanonical.primaryPhrase,
-        essentialTokens: primaryTopicForCanonical.essentialTokens,
-        isEnglishPage: primaryTopicForCanonical.isEnglishPage,
-      }
-    );
-    searchEvidence = fqEditorial.questions;
-    const searchQuestions = buildCanonicalSearchQuestions({
+    const tavilyMetaEditorial = editorialQuestionFetch.tavilyMeta;
+    const searchEvidence = editorialQuestionFetch.questions;
+    const questionTextsAfterFetchTopicQuality = searchEvidence.map((q) => q.text);
+    const sourceQuestionCount = searchEvidence.length;
+    const filterQuestionsMeta: FilterQuestionsRunMeta = { status: 'bypass_coverage_preserve_tavily' };
+    const questionTextsAfterPageRelevance = searchEvidence.map((q) => q.text);
+    const filteredOutQuestionExamples: string[] = [];
+    if (shouldLogQuestionCoverageTrace()) {
+      logQuestionCoverageTrace('after_fetch_and_relevance_filter', {
+        normalizedUrl,
+        pageType,
+        sourceQuestionCount,
+        filteredQuestionCount: searchEvidence.length,
+        filterMetaStatus: filterQuestionsMeta.status,
+        filteredOutQuestionExamples,
+      });
+    }
+    logQuestionPipelineStage('4_after_filterQuestionsByPageRelevance', searchEvidence, {
+      normalizedUrl,
+      pageType,
+      filterMetaStatus: filterQuestionsMeta.status,
+      note: 'Bypassed: page relevance LLM/heuristic disabled; Tavily lines preserved from fetchSearchQuestions.',
+    });
+    let searchQuestions = buildCanonicalSearchQuestions({
       evidence: searchEvidence,
       seedKeywords,
       meta: { title: meta.title, ogTitle: meta.ogTitle },
       topic: primaryTopicForCanonical,
       pageType,
     });
-    const filterQuestionsMeta: FilterQuestionsRunMeta = fqEditorial.meta;
+    const editorialCanonicalCountBeforeFallback = searchQuestions.length;
+    const editorialFbPack = applySearchQuestionsFallbackIfEmpty(searchQuestions, {
+      normalizedUrl,
+      pageType,
+      primaryPhrase: primaryTopicForCanonical.primaryPhrase,
+      essentialTokens: primaryTopicForCanonical.essentialTokens,
+      seedKeywords,
+      isEnglishPage: primaryTopicForCanonical.isEnglishPage,
+      debugCounts: {
+        afterFetchTopicQuality: questionTextsAfterFetchTopicQuality.length,
+        afterPageRelevanceFilter: questionTextsAfterPageRelevance.length,
+        afterCanonicalBeforeFallback: editorialCanonicalCountBeforeFallback,
+      },
+    });
+    searchQuestions = editorialFbPack.searchQuestions;
+    const questionSourceStatus = deriveQuestionSourceStatus(
+      tavilyMetaEditorial,
+      editorialFbPack.fallbackUsed
+    );
+    logQuestionSourceStatus({
+      normalizedUrl,
+      questionSourceStatus,
+      tavilyMeta: tavilyMetaEditorial,
+      fallbackUsed: editorialFbPack.fallbackUsed,
+    });
+    logQuestionPipelineStage('5_after_buildCanonicalSearchQuestions', searchQuestions, {
+      normalizedUrl,
+      pageType,
+      note:
+        'Preserve mode: trim + exact dedupe (max 12). No rewrite. See compare_stage3_evidence_to_stage5_canonical when QUESTION_PIPELINE_TRACE=1.',
+    });
 
     const coverageMatchInput = buildCoverageMatchInput({
       meta,
@@ -653,11 +852,43 @@ async function runAnalysisImpl(
       paragraphScore = Math.max(paragraphScore, blogParagraphScore);
     }
 
-    const searchQuestionCovered = computeSearchQuestionCoverage(searchQuestions, coverageMatchInput);
+    let searchQuestionCovered: boolean[];
+    if (shouldLogQuestionCoverageTrace()) {
+      const rowDetails = computeSearchQuestionCoverageDetails(searchQuestions, coverageMatchInput);
+      searchQuestionCovered = rowDetails.map((d) => d.covered);
+      logQuestionCoverageTrace('coverage_per_question', {
+        normalizedUrl,
+        pageType,
+        finalEvaluatedQuestionCount: searchQuestions.length,
+        rows: searchQuestions.map((q, i) => ({
+          question: q.text,
+          covered: rowDetails[i]?.covered ?? false,
+          branch: rowDetails[i]?.branch,
+          reason: rowDetails[i]?.reason,
+          tokenMatch:
+            rowDetails[i]?.matchedTokens != null && rowDetails[i]?.minTokensNeeded != null
+              ? { matched: rowDetails[i]?.matchedTokens, minNeeded: rowDetails[i]?.minTokensNeeded }
+              : undefined,
+        })),
+      });
+    } else {
+      searchQuestionCovered = computeSearchQuestionCoverage(searchQuestions, coverageMatchInput);
+    }
     const questionCoverageScore =
       searchQuestions.length > 0
         ? Math.round((searchQuestionCovered.filter(Boolean).length / searchQuestions.length) * 100)
         : 0;
+    if (shouldLogQuestionCoverageTrace()) {
+      logQuestionCoverageTrace('coverage_aggregate_scoring_path', {
+        normalizedUrl,
+        pageType,
+        coveredCount: searchQuestionCovered.filter(Boolean).length,
+        uncoveredCount: searchQuestionCovered.filter((c) => !c).length,
+        partialCount: null,
+        denominator: searchQuestions.length,
+        questionCoveragePercentShownInScores: questionCoverageScore,
+      });
+    }
     let questionMatchScore = computeQuestionMatchScore(searchQuestions, contentForAnalysis, {
       topicTokens: primaryTopicForCanonical.essentialTokens,
     });
@@ -1210,6 +1441,86 @@ async function runAnalysisImpl(
 
     const editorialSubtypePayload = editorialSubtypeForScoring;
 
+    const questionRulesForDisplay = getProfileForPageType(activeScoringConfig, pageType)?.questionRules;
+    let questionDisplayApplied = applyQuestionDisplaySelection({
+      searchQuestions,
+      searchQuestionCovered,
+      questionRules: questionRulesForDisplay,
+    });
+    questionDisplayApplied = whenDisplayEmptyUseCanonical(
+      questionDisplayApplied,
+      searchQuestions,
+      searchQuestionCovered
+    );
+
+    logQuestionPipelineStage('6_after_applyQuestionDisplaySelection', questionDisplayApplied.searchQuestions, {
+      normalizedUrl,
+      pageType,
+      questionRulesActive: !!questionRulesForDisplay,
+      note: 'Profile questionRules: reorder + maxDisplayQuestions cap — final strings shown in UI lists.',
+    });
+
+    if (shouldLogQuestionCoverageTrace()) {
+      const fullTotal = searchQuestions.length;
+      const fullCovered = searchQuestionCovered.filter(Boolean).length;
+      const disp = questionDisplayApplied.searchQuestions;
+      const dispCov = questionDisplayApplied.searchQuestionCovered;
+      const uiCovered = dispCov.filter(Boolean).length;
+      logQuestionCoverageTrace('after_applyQuestionDisplaySelection', {
+        normalizedUrl,
+        pageType,
+        forceRefresh: options?.forceRefresh === true,
+        apiScores_questionCoverage: questionCoverageScore,
+        scoringPath: {
+          denominator: fullTotal,
+          coveredCount: fullCovered,
+          uncoveredCount: fullTotal - fullCovered,
+        },
+        uiPayload: {
+          searchQuestionsLength: disp.length,
+          coveredCount: uiCovered,
+          uncoveredCount: disp.length - uiCovered,
+          percentIfUserCountsVisibleRows:
+            disp.length > 0 ? Math.round((uiCovered / disp.length) * 100) : null,
+        },
+        mismatchNote:
+          fullTotal !== disp.length || fullCovered !== uiCovered
+            ? 'scores.questionCoverage uses full canonical list before display selection; UI lists may be subset/reordered'
+            : 'display list same length as canonical (no maxDisplay cap or same size)',
+        questionCoverageDebug: questionDisplayApplied.debug ?? null,
+      });
+    }
+
+    logQuestionCoverageStagesDebug({
+      normalizedUrl,
+      pageType,
+      note:
+        'afterFetchTopicQuality = fetchSearchQuestions (internal Tavily + topic/quality). Raw merged Tavily: QUESTION_PIPELINE_TRACE in searchQuestions.ts. Page filter does not use post-LLM token subset.',
+      afterFetchTopicQuality: {
+        count: questionTextsAfterFetchTopicQuality.length,
+        sample: questionTextsAfterFetchTopicQuality.slice(0, 10),
+      },
+      afterPageRelevanceFilter: {
+        count: questionTextsAfterPageRelevance.length,
+        sample: questionTextsAfterPageRelevance.slice(0, 10),
+      },
+      afterCanonical: {
+        count: searchQuestions.length,
+        sample: searchQuestions.map((q) => q.text).slice(0, 10),
+      },
+      afterDisplaySelection: {
+        count: questionDisplayApplied.searchQuestions.length,
+        sample: questionDisplayApplied.searchQuestions.map((q) => q.text).slice(0, 10),
+      },
+      finalCoveredQuestions: questionDisplayApplied.searchQuestions
+        .filter((_, i) => questionDisplayApplied.searchQuestionCovered[i])
+        .map((q) => q.text),
+      finalUncoveredQuestions: questionDisplayApplied.searchQuestions
+        .filter((_, i) => !questionDisplayApplied.searchQuestionCovered[i])
+        .map((q) => q.text),
+      filterMetaStatus: filterQuestionsMeta.status,
+    });
+
     const coreResult: AnalysisResult = {
       url: inputUrl,
       normalizedUrl,
@@ -1227,9 +1538,11 @@ async function runAnalysisImpl(
       seedKeywords,
       pageQuestions,
       searchEvidence,
-      canonicalSearchQuestions: searchQuestions,
-      searchQuestions,
-      searchQuestionCovered,
+      questionSourceStatus,
+      canonicalSearchQuestions: [...searchQuestions],
+      searchQuestions: questionDisplayApplied.searchQuestions,
+      searchQuestionCovered: questionDisplayApplied.searchQuestionCovered,
+      ...(questionDisplayApplied.debug ? { questionCoverageDebug: questionDisplayApplied.debug } : {}),
       questionClusters: [],
       scores,
       contentQuality,
@@ -1323,9 +1636,16 @@ async function runAnalysisImpl(
       editorialSubtypeDebug: coreResult.editorialSubtypeDebug,
     });
 
-    const uncoveredQuestions = findUncoveredQuestions(searchQuestions, coverageMatchInput);
+    const uncoveredQuestions = questionDisplayApplied.uncoveredOrderedForRecommendations;
+    logGuideConfigBoundary('runAnalysis before generateGeoRecommendations', pageType, activeScoringConfig);
+    console.log('[RUNANALYSIS -> GUIDE]', {
+      pageType,
+      passedConfigVersion: activeScoringConfig?.version,
+      passedProfileKeys: Object.keys(activeScoringConfig?.profiles ?? {}),
+      isDefaultSingleton: activeScoringConfig === DEFAULT_SCORING_CONFIG,
+    });
     const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
-      searchQuestions,
+      searchQuestions: questionDisplayApplied.searchQuestions,
       pageQuestions,
       pageType,
       editorialSubtype: coreResult.editorialSubtype,
@@ -1340,6 +1660,8 @@ async function runAnalysisImpl(
       hasReviewSchema,
       limitedAnalysis: coreResult.limitedAnalysis,
       seedKeywords: coreResult.seedKeywords,
+      questionRules: questionRulesForDisplay,
+      activeScoringConfig,
     });
 
     if (shouldLogGeoScoreAxis(url)) {

@@ -20,9 +20,7 @@ function localeOf(rec: GeoRecommendations): 'ko' | 'en' {
 }
 
 function gapFallback(locale: 'ko' | 'en'): string {
-  return locale === 'ko'
-    ? '추가로 짚을 만한 빈칸은 많지 않습니다. 본문과 질문이 더 보이면 구체적인 팁을 드릴 수 있습니다.'
-    : 'Not much seems missing beyond what follows. More page text and questions will allow sharper tips.';
+  return locale === 'ko' ? `- ${ko.gap.none}` : `- ${en.gap.none}`;
 }
 
 /** Video-only template lines (headings / blocks) — strip from editorial & commerce. */

@@ -235,6 +235,48 @@ export const DEFAULT_SCORING_CONFIG: GeoScoringConfig = {
       },
       issueRules: [],
       queryTemplates: [],
+      /** E2E / merge-path smoke test — mirror in Supabase `profiles.commerce.guideRules` when validating live config */
+      guideRules: [
+        {
+          id: 'test_force',
+          basedOn: ['no_tables'],
+          message: '',
+          suggestedHeadings: ['🔥 무조건 떠야 하는 테스트'],
+          suggestedBlocks: ['🔥 테스트 블록'],
+          priorityNotes: ['🔥 테스트 노트'],
+        },
+      ],
+    },
+    /** Offline fallback: must exist so `getProfileForPageType` / guide merge work when DB config is unavailable */
+    editorial: {
+      weights: {
+        citation: 0.34,
+        structure: 0.33,
+        trust: 0.33,
+      },
+      issueRules: [],
+      queryTemplates: [],
+      guideRules: [],
+    },
+    video: {
+      weights: {
+        citation: 0.4,
+        structure: 0.3,
+        trust: 0.3,
+      },
+      issueRules: [],
+      queryTemplates: [],
+      guideRules: [],
+    },
+    default: {
+      weights: {
+        citation: 0.34,
+        structure: 0.33,
+        trust: 0.33,
+      },
+      issueRules: [],
+      queryTemplates: [],
+      guideRules: [],
     },
   },
 };

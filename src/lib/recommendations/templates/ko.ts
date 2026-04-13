@@ -11,16 +11,18 @@ export const ko = {
     neutral:
       '막히는 부분은 없어 보입니다. 요약·목차·질문 답·출처를 다듬으면 읽기 좋아집니다.',
   },
-  /** Gap = 한 문장, 문제만 서술 */
+  /** Gap = 실행 가능한 보완 한 줄 (문제 진술형/추상 표현 지양) */
   gap: {
-    paragraph: '맨 앞 요약이 약하고 본문이 길게 이어집니다.',
-    structure: '소제목과 한눈에 보는 개요가 약합니다.',
-    questionCoverage: '자주 묻는 질문에 본문이 직접 답하지 않습니다.',
-    questionMatch: '검색 질문 문장이 제목·본문에 잘 드러나지 않습니다.',
-    citation: '숫자·출처가 드러나는 짧은 문장이 적습니다.',
-    trust: '작성자·날짜·출처·문의처를 찾기 어렵습니다.',
-    videoMetadata: '설명란에 챕터·요약·FAQ가 부족합니다.',
-    issuesFooter: (n: number) => `상세 목록에서 관련 항목 ${n}가지가 더 있습니다.`,
+    paragraph:
+      '맨 앞에 3~4줄 요약을 두고, 길어지는 본문은 H2/H3로 끊어 읽기 쉽게 구성합니다.',
+    structure: '상단에 한 줄 개요를 두고, 소제목(H2/H3)으로 흐름을 잡습니다.',
+    questionCoverage: 'FAQ 또는 Q/A 형식으로 질문과 답을 쌍으로 추가합니다.',
+    questionMatch: '자주 검색되는 질문 문구를 소제목(H2/H3)에 그대로 반영합니다.',
+    citation: '숫자·단위·출처가 드러나는 짧은 문장을 늘립니다.',
+    trust: '작성자·날짜·참고 링크·문의처를 한 블록에 모읍니다.',
+    videoMetadata: '설명란에 챕터·짧은 요약·FAQ(질문·답)을 추가합니다.',
+    /** When axis/issue signals give no concrete gap line */
+    none: '현재 기준에서는 추가적인 콘텐츠 보완 포인트가 없습니다.',
   },
   headings: {
     faq: '자주 묻는 질문(FAQ)',

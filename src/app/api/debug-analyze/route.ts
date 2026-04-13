@@ -31,7 +31,7 @@ export async function POST(req: Request) {
     );
 
     // 4) 외부 질문(mock) 추출
-    const searchQuestions: SearchQuestion[] = await fetchSearchQuestions(seedKeywords);
+    const { questions: searchQuestions, tavilyMeta } = await fetchSearchQuestions(seedKeywords);
 
     return NextResponse.json(
       {
@@ -42,6 +42,7 @@ export async function POST(req: Request) {
         pageQuestions,
         seedKeywords,
         searchQuestions,
+        tavilyMeta,
       },
       { status: 200 }
     );

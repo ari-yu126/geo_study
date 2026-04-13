@@ -1,17 +1,21 @@
 "use client";
 
+import { getGeoGradeInfo } from "../utils/geoReportLabels";
+
 interface ScoreGaugeProps {
   score: number;
   size?: number;
   strokeWidth?: number;
 }
 
+/** Web CSS hex — canonical tiers live in `getGeoGradeInfo` (geoReportLabels) */
 function getGradeInfo(score: number) {
-  if (score >= 85) return { grade: "S", label: "최우수", color: "#34d399" };
-  if (score >= 70) return { grade: "A", label: "우수", color: "#00d4c8" };
-  if (score >= 55) return { grade: "B", label: "양호", color: "#5b6ef5" };
-  if (score >= 40) return { grade: "C", label: "미흡", color: "#f5a623" };
-  return { grade: "D", label: "개선필요", color: "#f05c7a" };
+  const g = getGeoGradeInfo(score);
+  return {
+    grade: g.grade,
+    label: g.label,
+    color: `#${g.colorHex}`.toLowerCase(),
+  };
 }
 
 export default function ScoreGauge({

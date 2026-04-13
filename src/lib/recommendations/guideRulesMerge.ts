@@ -7,6 +7,28 @@ import type {
 } from '../analysisTypes';
 import { MAX_PRIORITY_ACTIONS } from './rules/axisRules';
 
+const GUIDE_MERGE_DEBUG = process.env.GEO_GUIDE_MERGE_DEBUG === '1';
+
+function guideMergeDbg(...args: unknown[]): void {
+  if (GUIDE_MERGE_DEBUG) console.log('[guideMerge]', ...args);
+}
+
+/** Resolve trigger issue ids for a rule (arrays, single string, alternate JSON keys). */
+export function guideRuleBasedOnRefs(gr: GuideRule): string[] {
+  const r = gr as GuideRule & Record<string, unknown>;
+  const alt = r.triggers ?? r.trigger_issues ?? r.issue_ids ?? r.issueIds;
+  const normalizeList = (v: unknown): string[] => {
+    if (typeof v === 'string' && v.trim()) return [v.trim()];
+    if (!Array.isArray(v) || v.length === 0) return [];
+    return v.map((x) => String(x).trim()).filter(Boolean);
+  };
+  const fromCamel = normalizeList(r.basedOn);
+  if (fromCamel.length) return fromCamel;
+  const fromSnake = normalizeList(r.based_on);
+  if (fromSnake.length) return fromSnake;
+  return normalizeList(alt);
+}
+
 const PRIORITY_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
 
 /** Total cap after prepending config guides + engine fallback lines. */
@@ -73,8 +95,8 @@ function mergePrimaryConfigThenEngine(configPrimary: string[], engineFallback: s
   return out;
 }
 
-/** Ordered dedupe: per matched rule, message then priorityNotes. */
-function buildEditorialConfigNotes(sorted: GuideRule[]): string[] {
+/** Per matched rule: message then priorityNotes (ordered dedupe). */
+function buildConfigNotesFromRules(sorted: GuideRule[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const g of sorted) {
@@ -93,7 +115,7 @@ function buildEditorialConfigNotes(sorted: GuideRule[]): string[] {
   return out;
 }
 
-function collectEditorialConfigHeadings(sorted: GuideRule[]): string[] {
+function collectConfigHeadingsFromRules(sorted: GuideRule[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const g of sorted) {
@@ -123,7 +145,7 @@ function collectEditorialConfigBlocks(sorted: GuideRule[]): string[] {
   return out;
 }
 
-function editorialHasRenderableGuideContent(sorted: GuideRule[]): boolean {
+function hasRenderableGuideContent(sorted: GuideRule[]): boolean {
   for (const g of sorted) {
     if (g.message?.trim()) return true;
     if (g.priorityNotes?.some((s) => s.trim())) return true;
@@ -147,7 +169,7 @@ function appendGuideTrace(
 ): GeoRecommendations['trace'] {
   const extraTrace: GeoRecommendationTraceEntry[] = sorted.map((g) => ({
     target: 'guideRule' as const,
-    sources: [`guide:${g.id}`, ...g.basedOn.map((b) => `ref:${b}`)],
+    sources: [`guide:${g.id}`, ...guideRuleBasedOnRefs(g).map((b) => `ref:${String(b).trim()}`)],
   }));
   return base.trace
     ? { ...base.trace, entries: [...base.trace.entries, ...extraTrace] }
@@ -155,9 +177,10 @@ function appendGuideTrace(
 }
 
 /**
- * Merge monthly `guideRules` when `basedOn` hits issue or passed ids.
- * Editorial: config supplies priorityNotes (message + optional arrays), suggestedHeadings, suggestedBlocks first; engine fills gaps.
- * Commerce / video: legacy — config `message` lines prepend priorityNotes only.
+ * Merge monthly `guideRules` from `resolveGuideRulesForPageType` (default ∪ page profile) when `basedOn` hits issue or passed ids.
+ * All page types: config-first for priorityNotes (message + priorityNotes), suggestedHeadings, suggestedBlocks;
+ * engine output fills remaining slots (deduped, capped). Category-specific copy lives in config per profile
+ * (editorial / commerce / video / default), not in this merge layer.
  */
 export function mergeGuideRulesIntoRecommendations(
   base: GeoRecommendations,
@@ -169,14 +192,26 @@ export function mergeGuideRulesIntoRecommendations(
   }
 ): GeoRecommendations {
   const rules = params.guideRules;
-  const pageType = params.pageType;
-  /** Rich merge (config-primary headings/blocks/notes): editorial only (commerce/video/default unchanged). */
-  const useEditorialRichMerge = pageType === 'editorial';
   const engineNotes = base.actionPlan.priorityNotes ?? [];
   const engineHeadings = base.actionPlan.suggestedHeadings ?? [];
   const engineBlocks = base.actionPlan.suggestedBlocks ?? [];
 
+  guideMergeDbg('merge enter', {
+    pageType: params.pageType,
+    guideRuleCount: rules?.length ?? 0,
+    guideRuleIds: (rules ?? []).map((r) => r.id),
+    rulesTriggerDetail: (rules ?? []).map((r) => ({
+      id: r.id,
+      refsResolved: guideRuleBasedOnRefs(r),
+      rawBasedOn: r.basedOn,
+      rawBased_on: r.based_on,
+    })),
+    issueIdSet: [...params.issueIdSet],
+    passedIdSet: [...params.passedIdSet],
+  });
+
   if (!rules?.length) {
+    guideMergeDbg('merge exit: no guideRules');
     return {
       ...base,
       guideGenerationDebug: { source: 'fallback', matchedRuleIds: [], appliedFields: { ...EMPTY_APPLIED } },
@@ -185,14 +220,37 @@ export function mergeGuideRulesIntoRecommendations(
 
   const matched: GuideRule[] = [];
   for (const gr of rules) {
-    if (!gr.basedOn?.length) continue;
-    const hit = gr.basedOn.some(
-      (id) => params.issueIdSet.has(id) || params.passedIdSet.has(id)
-    );
+    const refs = guideRuleBasedOnRefs(gr);
+    const normalizedId = String(gr.id ?? '').trim();
+    if (!refs.length) {
+      guideMergeDbg('rule skip: empty basedOn refs', {
+        ruleId: normalizedId,
+        refsResolved: refs,
+      });
+      continue;
+    }
+    const hits = refs.map((raw) => {
+      const id = String(raw).trim();
+      const fromIssue = params.issueIdSet.has(id);
+      const fromPassed = params.passedIdSet.has(id);
+      return { id, fromIssue, fromPassed, hit: fromIssue || fromPassed };
+    });
+    const hit = hits.some((h) => h.hit);
+    guideMergeDbg('rule basedOn', {
+      ruleId: normalizedId,
+      normalizedBasedOnRefs: refs,
+      hitsIssueOrPassed: hits,
+      anyHit: hit,
+    });
     if (hit) matched.push(gr);
   }
 
+  console.log('MATCHED RULES:', matched);
+
   if (matched.length === 0) {
+    guideMergeDbg('merge exit: no basedOn match', {
+      finalMatchedGuideRuleIds: [] as string[],
+    });
     return {
       ...base,
       guideGenerationDebug: { source: 'fallback', matchedRuleIds: [], appliedFields: { ...EMPTY_APPLIED } },
@@ -200,47 +258,26 @@ export function mergeGuideRulesIntoRecommendations(
   }
 
   const sorted = sortMatchedGuides(matched);
+  console.log(
+    'HAS CONTENT CHECK:',
+    sorted.map((g) => ({
+      id: g.id,
+      hasHeadings: !!g.suggestedHeadings?.length,
+      hasBlocks: !!g.suggestedBlocks?.length,
+      hasNotes: !!g.priorityNotes?.length,
+    }))
+  );
+  guideMergeDbg('merge matched', {
+    finalMatchedGuideRuleIds: sorted.map((g) => g.id),
+  });
   const snapshots = matchedSnapshots(sorted);
   const trace = appendGuideTrace(base, sorted);
 
-  if (!useEditorialRichMerge) {
-    const configLines = sorted.map((g) => g.message.trim()).filter(Boolean);
-    if (configLines.length === 0) {
-      return {
-        ...base,
-        trace,
-        guideGenerationDebug: {
-          source: 'fallback',
-          matchedRuleIds: sorted.map((g) => g.id),
-          matchedGuideRules: snapshots,
-          appliedFields: { ...EMPTY_APPLIED },
-        },
-      };
-    }
-    const mergedNotes = uniqMergePriorityNotes(configLines, engineNotes);
-    const source = resolveGuideSource(configLines, engineNotes);
-    return {
-      ...base,
-      actionPlan: {
-        ...base.actionPlan,
-        priorityNotes: mergedNotes.length > 0 ? mergedNotes : base.actionPlan.priorityNotes,
-      },
-      trace,
-      guideGenerationDebug: {
-        source,
-        matchedRuleIds: sorted.map((g) => g.id),
-        matchedGuideRules: snapshots,
-        appliedFields: {
-          priorityNotes: true,
-          suggestedHeadings: false,
-          suggestedBlocks: false,
-        },
-      },
-    };
-  }
-
-  // Editorial: config-primary merge for notes, headings, blocks
-  if (!editorialHasRenderableGuideContent(sorted)) {
+  if (!hasRenderableGuideContent(sorted)) {
+    guideMergeDbg('merge exit: matched but no renderable guide content', {
+      finalMatchedGuideRuleIds: sorted.map((g) => g.id),
+      guideGenerationDebugSource: 'fallback',
+    });
     return {
       ...base,
       trace,
@@ -253,8 +290,8 @@ export function mergeGuideRulesIntoRecommendations(
     };
   }
 
-  const configNotes = buildEditorialConfigNotes(sorted);
-  const configHeadings = collectEditorialConfigHeadings(sorted);
+  const configNotes = buildConfigNotesFromRules(sorted);
+  const configHeadings = collectConfigHeadingsFromRules(sorted);
   const configBlocks = collectEditorialConfigBlocks(sorted);
 
   const mergedNotes = uniqMergePriorityNotes(configNotes, engineNotes);
@@ -279,6 +316,12 @@ export function mergeGuideRulesIntoRecommendations(
   if (engineAppendedNotes || engineAppendedHeadings || engineAppendedBlocks) {
     source = 'mixed';
   }
+
+  guideMergeDbg('merge exit: ok', {
+    finalMatchedGuideRuleIds: sorted.map((g) => g.id),
+    guideGenerationDebugSource: source,
+    appliedFields,
+  });
 
   return {
     ...base,

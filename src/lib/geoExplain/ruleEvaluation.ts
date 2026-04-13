@@ -1,4 +1,5 @@
-import { evaluateCheck } from '../checkEvaluator';
+import { evaluateCheck, evaluateCheckDetailed } from '../checkEvaluator';
+import { SUPPLEMENTAL_EDITORIAL_ISSUE_RULE_IDS } from '../supplementalEditorialIssueRules';
 import { DEFAULT_SCORING_CONFIG } from '../defaultScoringConfig';
 import {
   loadActiveScoringConfig,
@@ -118,6 +119,12 @@ export async function runGeoRuleLayer(
   const ruleFailures: GeoIssue[] = [];
   const rulePasses: GeoPassedItem[] = [];
 
+  /** Per-rule diagnostics for monthly issueRules (editorial only; disable with GEO_ISSUE_RULE_EVAL_LOG=0). */
+  const logIssueRuleEval =
+    pageType === 'editorial' &&
+    !skipTextOnlyRules &&
+    process.env.GEO_ISSUE_RULE_EVAL_LOG !== '0';
+
   for (const rule of issueRulesToUse) {
     if (skipTextOnlyRules) {
       if (!ytAllowResolved.ids.includes(rule.id)) continue;
@@ -127,7 +134,23 @@ export async function runGeoRuleLayer(
       console.warn('[runGeoRuleLayer] issueRule missing check/condition:', rule.id);
       continue;
     }
-    const passed = evaluateCheck(checkName, features, rule.threshold);
+    const evalDetail = evaluateCheckDetailed(checkName, features, rule.threshold);
+    const passed = evalDetail.passed;
+
+    if (logIssueRuleEval) {
+      console.log('[ISSUE_RULE_EVAL]', {
+        ruleId: rule.id,
+        check: evalDetail.rawCheck,
+        resolvedCheck: evalDetail.resolvedCheck,
+        threshold: rule.threshold ?? null,
+        effectiveThreshold: evalDetail.effectiveThreshold ?? null,
+        measured: evalDetail.measured,
+        passed: evalDetail.passed,
+        supplemental: SUPPLEMENTAL_EDITORIAL_ISSUE_RULE_IDS.has(rule.id),
+        url: result.url,
+      });
+    }
+
     if (!passed) {
       if (rule.id === 'content_short' && quotablePassed) continue;
       const meta = issueRuleGeoMeta(rule);

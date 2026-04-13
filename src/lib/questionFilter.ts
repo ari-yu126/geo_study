@@ -5,10 +5,7 @@ import {
 } from './analysisLlm';
 import { isQuotaError, isLlmCooldown } from './llmError';
 import type { SearchQuestion } from './analysisTypes';
-import {
-  buildTopicIntentFallbackQuestions,
-  filterSearchQuestionsByTopicAlignment,
-} from './searchQuestionTopicUtils';
+import { filterSearchQuestionsByTopicAlignment } from './searchQuestionTopicUtils';
 
 export interface FilterQuestionsOptions {
   pageType?: 'video' | 'editorial';
@@ -32,7 +29,9 @@ export type FilterQuestionsRunMeta = {
     | 'bypass_quota'
     | 'bypass_quota_heuristic'
     | 'bypass_error'
-    | 'bypass_error_heuristic';
+    | 'bypass_error_heuristic'
+    /** Question Coverage: skip LLM/heuristic page relevance; use fetch output as-is */
+    | 'bypass_coverage_preserve_tavily';
 };
 
 /**
@@ -43,17 +42,18 @@ function applyTopicHeuristic(
   questions: SearchQuestion[],
   primaryPhrase: string,
   essentialTokens: string[] | undefined,
-  isEnglish: boolean
+  _isEnglish: boolean
 ): SearchQuestion[] {
   const phrase = primaryPhrase.trim();
   const tokens = essentialTokens?.filter(Boolean) ?? [];
   if (phrase && tokens.length > 0) {
     const aligned = filterSearchQuestionsByTopicAlignment(questions, phrase, tokens);
     if (aligned.length > 0) return aligned;
-    return buildTopicIntentFallbackQuestions(phrase, isEnglish);
+    /** No synthetic “intent” questions — keep Tavily-sourced lines only (best-effort slice). */
+    return questions.slice(0, 12);
   }
   if (phrase) {
-    return buildTopicIntentFallbackQuestions(phrase, isEnglish);
+    return questions.slice(0, 12);
   }
   return questions.slice(0, 12);
 }
@@ -78,7 +78,7 @@ export async function filterQuestionsByPageRelevance(
   const list = questions.slice(0, 20).map((q, i) => `${i + 1}. ${q.text}`).join('\n');
 
   const strictHint = primaryPhrase
-    ? `\n**STRICT RELEVANCE:** Primary topic is [${primaryPhrase}]. Essential terms: [${(essentialTokens ?? []).join(', ')}]. Discard anything not directly about this (including unrelated keyboard layout/display, switch popularity trends, generic sustainability/ESG, or off-topic snippets). Software, DB, language learning, education, unrelated certification = 100% reject. Be ruthless.\n`
+    ? `\n**TOPIC RELEVANCE ONLY (NOT “already answered on this page”):** Primary topic is [${primaryPhrase}]. Essential terms: [${(essentialTokens ?? []).join(', ')}].\nInclude a question if a real user searching about this topic could ask it — **even when this page’s title/snippet does NOT contain the answer.** Do NOT discard a question just because the excerpt does not show an answer; downstream logic measures coverage separately.\nDiscard only what is clearly off-topic (unrelated product/domain/subject, generic sustainability/ESG noise when irrelevant, software/DB/education rabbit holes unrelated to the topic). Be strict on **topic**, not on **page coverage**.\n`
     : '';
   const videoHint = isVideo && !primaryPhrase
     ? '\n**영상 콘텐츠:** 제목·설명 기반으로 판단해줘. 관련 있으면 관대하게 포함해줘.\n'
@@ -93,25 +93,24 @@ export async function filterQuestionsByPageRelevance(
   }
 
   const prompt = `다음은 검색·커뮤니티에서 수집한 질문 목록이다.
-아래 페이지 제목과 본문 요약을 보고, 이 페이지 주제와 **직접 관련 있는** 질문 번호만 골라줘.${strictHint}${videoHint}
+아래 페이지 제목과 본문 요약은 **주제(seed 주제)를 파악하는 참고용**이다. 질문을 고를 때 **“이 페이지 본문에 답이 이미 있는가?”는 판단하지 마라.** (그건 다른 단계에서 처리한다.)
+**같은 주제·같은 검색 의도**로 물을 법한 질문이면 포함한다. 요약에 답이 안 보여도, 사용자가 그 주제로 검색할 때 물을 법한 질문이면 포함한다.${strictHint}${videoHint}
 
-**커뮤니티 컨텍스트:** 톤이 비격식이어도 괜찮다. **핵심 사용자 의도와 사실적 질문**에 집중해줘.
-- 유용한 정보가 있지만 표현이 과한 경우 → 전문적인 질문으로 재구성할 수 있으면 포함, 그렇지 않으면 제외
-- 예: "XX 드라이기 실사용 후기 어때요?" → 포함
+**커뮤니티 컨텍스트:** 톤이 비격식이어도 괜찮다. **핵심 사용자 검색 의도**에 집중해줘.
 
 **ZERO TOLERANCE (예외 없이 즉시 제외):** 성인(NSFW)·선정적·도박·불법 광고·스팸 관련 질문. 조금이라도 의심되거나 유해한 맥락이 있으면 반드시 제거해줘.
 
-## 페이지 제목
+## 페이지 제목 (참고)
 ${title}
 
-## 본문 요약 (앞부분)
+## 본문 요약 앞부분 (참고 — 답 포함 여부로 걸러내지 말 것)
 ${snippet}
 
 ## 수집된 질문
 ${list}
 
 출력 형식: 번호만 쉼표로 구분. 예: 1,3,5,7
-페이지 주제와 무관한 질문(다른 상품, 다른 도메인, 완전히 다른 주제)은 제외해줘.`;
+**주제와 무관한** 질문(완전히 다른 상품/도메인/주제)만 제외해줘. 주제와 맞는데 본문에 답이 없어 보여도 **포함**해줘.`;
 
   try {
     const preDelay = getAnalysisLlmPreCallDelayMs();
@@ -133,12 +132,7 @@ ${list}
       }
     }
     if (filtered.length > 0) {
-      if (primaryPhrase.trim() && essentialTokens && essentialTokens.length > 0) {
-        const aligned = filterSearchQuestionsByTopicAlignment(filtered, primaryPhrase, essentialTokens);
-        if (aligned.length > 0) {
-          return { questions: aligned, meta: { status: 'ok_llm_aligned' } };
-        }
-      }
+      /** Keep full LLM selection — do not subset with token alignment here (that drops topic-relevant but “uncovered” questions). Coverage is decided later. */
       return { questions: filtered, meta: { status: 'ok_llm' } };
     }
     if (isVideo && questions.length >= 10) {

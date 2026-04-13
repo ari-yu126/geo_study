@@ -3,7 +3,7 @@
  * questionMatch / canonical intents reflect real topical overlap with the page.
  */
 
-import type { SearchQuestion, SearchSource } from './analysisTypes';
+import type { SearchQuestion } from './analysisTypes';
 
 /** Marketing / trend one-liners often unrelated to a specific product how-to page */
 const GENERIC_SERP_NOISE_PATTERNS: RegExp[] = [
@@ -70,27 +70,4 @@ export function filterSearchQuestionsByTopicAlignment(
   essentialTokens: string[]
 ): SearchQuestion[] {
   return questions.filter((q) => isSearchQuestionAlignedWithTopic(q.text, primaryPhrase, essentialTokens));
-}
-
-const FALLBACK_SOURCE: SearchSource = 'google';
-
-/**
- * Short intent-style questions anchored on primaryPhrase (used when evidence is too noisy).
- */
-export function buildTopicIntentFallbackQuestions(primaryPhrase: string, isEnglish: boolean): SearchQuestion[] {
-  const p = primaryPhrase.trim() || '이 주제';
-  if (isEnglish) {
-    return [
-      { source: FALLBACK_SOURCE, text: `What types or options matter most when choosing ${p}?` },
-      { source: FALLBACK_SOURCE, text: `When is ${p} the right choice for beginners vs advanced users?` },
-      { source: FALLBACK_SOURCE, text: `What are the main differences or trade-offs for ${p}?` },
-      { source: FALLBACK_SOURCE, text: `What practical questions do people ask most often about ${p}?` },
-    ];
-  }
-  return [
-    { source: FALLBACK_SOURCE, text: `${p}의 종류나 특징은 무엇인가요?` },
-    { source: FALLBACK_SOURCE, text: `${p}를 고를 때 어떤 기준으로 비교하면 좋나요?` },
-    { source: FALLBACK_SOURCE, text: `${p}는 어떤 상황이나 사용자에게 적합한가요?` },
-    { source: FALLBACK_SOURCE, text: `입문자는 ${p}를 어떻게 시작하면 좋나요?` },
-  ];
 }

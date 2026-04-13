@@ -6,6 +6,7 @@ import type {
   GeoIssue,
   GeoOpportunity,
   PageType,
+  QuestionDisplayRules,
   SearchQuestion,
 } from '../analysisTypes';
 import type { RecommendationContext } from './recommendationContext';
@@ -26,6 +27,7 @@ export interface LegacyRecommendationInput {
   reviewLike?: boolean;
   hasReviewSchema?: boolean;
   limitedAnalysis?: boolean;
+  questionRules?: QuestionDisplayRules | null;
 }
 
 export function toRecommendationContext(input: LegacyRecommendationInput): RecommendationContext {
@@ -46,5 +48,6 @@ export function toRecommendationContext(input: LegacyRecommendationInput): Recom
       hasReviewSchema: input.hasReviewSchema ?? false,
     },
     limitedAnalysis: input.limitedAnalysis ?? false,
+    questionRules: input.questionRules,
   };
 }

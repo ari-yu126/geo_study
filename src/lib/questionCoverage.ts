@@ -142,6 +142,160 @@ export function computeQuestionMatchScore(
   return Math.round((hit / top.length) * 100);
 }
 
+/** Per-question coverage decision for debugging / tracing (same logic as boolean coverage). */
+export type SearchQuestionCoverageRowDetail = {
+  covered: boolean;
+  branch:
+    | 'no_search_tokens'
+    | 'primary_surface_token_ratio'
+    | 'full_body_token_ratio'
+    | 'page_questions_intersection'
+    | 'meaningful_token_ratio'
+    | 'topic_token_bridge'
+    | 'uncovered';
+  reason: string;
+  matchedTokens?: number;
+  minTokensNeeded?: number;
+};
+
+type CoverageSurfaces = {
+  primaryLower: string;
+  fullLower: string;
+  topicSet: Set<string>;
+};
+
+function buildCoverageSurfaces(input: CoverageMatchInput): CoverageSurfaces {
+  const primaryLower = (
+    input.pageTitle +
+    '\n' +
+    input.headingsText +
+    '\n' +
+    input.prioritySurface +
+    '\n' +
+    input.pageQuestions.join(' ')
+  ).toLowerCase();
+  const fullLower = input.fullContent.toLowerCase();
+  const topicSet = new Set(input.topicTokens.filter((t) => t.length >= 2));
+  return { primaryLower, fullLower, topicSet };
+}
+
+function evaluateSearchQuestionCoverageRow(
+  searchQ: SearchQuestion,
+  input: CoverageMatchInput,
+  surfaces: CoverageSurfaces
+): SearchQuestionCoverageRowDetail {
+  const { primaryLower, fullLower, topicSet } = surfaces;
+
+  const searchTokens = tokenizeForMatch(searchQ.text, 2);
+  if (searchTokens.length === 0) {
+    return {
+      covered: false,
+      branch: 'no_search_tokens',
+      reason: 'No tokenizable content in question text',
+    };
+  }
+
+  const minMatch = Math.max(1, Math.ceil(searchTokens.length * TOKEN_MATCH_RATIO));
+  const countIn = (blob: string) => searchTokens.filter((t) => blob.includes(t)).length;
+
+  const inPrimary = countIn(primaryLower);
+  if (inPrimary >= minMatch) {
+    return {
+      covered: true,
+      branch: 'primary_surface_token_ratio',
+      reason: `primary+headings+FAQ surface: ${inPrimary}/${searchTokens.length} tokens >= min ${minMatch}`,
+      matchedTokens: inPrimary,
+      minTokensNeeded: minMatch,
+    };
+  }
+
+  const inFull = countIn(fullLower);
+  if (inFull >= minMatch) {
+    return {
+      covered: true,
+      branch: 'full_body_token_ratio',
+      reason: `full body: ${inFull}/${searchTokens.length} tokens >= min ${minMatch}`,
+      matchedTokens: inFull,
+      minTokensNeeded: minMatch,
+    };
+  }
+
+  if (input.pageQuestions.length > 0) {
+    const minIntersection =
+      searchTokens.length <= SHORT_QUESTION_TOKEN_THRESHOLD ? MIN_INTERSECTION_SHORT : MIN_INTERSECTION;
+    let best = 0;
+    for (const pageQ of input.pageQuestions) {
+      const pageTokens = tokenizeForMatch(pageQ, 2);
+      const intersection = searchTokens.filter((t) => pageTokens.includes(t));
+      if (intersection.length > best) best = intersection.length;
+      if (intersection.length >= minIntersection) {
+        return {
+          covered: true,
+          branch: 'page_questions_intersection',
+          reason: `intersection with pageQuestions >= ${minIntersection} (best ${best})`,
+        };
+      }
+    }
+  }
+
+  const mq = meaningfulTokens(searchQ.text);
+  if (mq.length > 0) {
+    const blob = `${primaryLower}\n${fullLower}`;
+    let hits = 0;
+    for (const t of mq) {
+      if (blob.includes(t)) hits++;
+    }
+    const ratio = hits / mq.length;
+    if (ratio >= MEANINGFUL_COVERAGE_RATIO) {
+      return {
+        covered: true,
+        branch: 'meaningful_token_ratio',
+        reason: `meaningful tokens: ${hits}/${mq.length} >= ${MEANINGFUL_COVERAGE_RATIO}`,
+      };
+    }
+  }
+
+  let topicChecks = 0;
+  let topicHits = 0;
+  for (const t of searchTokens) {
+    const inTopic =
+      topicSet.has(t) ||
+      input.topicTokens.some((tt) => tt.includes(t) || (t.length >= 3 && tt.includes(t)));
+    if (inTopic) {
+      topicChecks++;
+      if (primaryLower.includes(t) || fullLower.includes(t)) topicHits++;
+    }
+  }
+  const needBridge = Math.max(1, Math.ceil(topicChecks * 0.5));
+  if (topicChecks >= 1 && topicHits >= needBridge) {
+    return {
+      covered: true,
+      branch: 'topic_token_bridge',
+      reason: `topic-token bridge: ${topicHits}/${topicChecks} topic-linked tokens in body (need >= ${needBridge})`,
+    };
+  }
+
+  return {
+    covered: false,
+    branch: 'uncovered',
+    reason: `no match: primary=${inPrimary}, full=${inFull}, minTokens=${minMatch}; topic bridge ${topicHits}/${topicChecks}`,
+    matchedTokens: inFull,
+    minTokensNeeded: minMatch,
+  };
+}
+
+/**
+ * Same as computeSearchQuestionCoverage but returns per-row branch/reason for tracing.
+ */
+export function computeSearchQuestionCoverageDetails(
+  canonicalSearchQuestions: SearchQuestion[],
+  input: CoverageMatchInput
+): SearchQuestionCoverageRowDetail[] {
+  if (!canonicalSearchQuestions || canonicalSearchQuestions.length === 0) return [];
+  const surfaces = buildCoverageSurfaces(input);
+  return canonicalSearchQuestions.map((q) => evaluateSearchQuestionCoverageRow(q, input, surfaces));
+}
+
 /**
  * Compare canonical search question intents against page surfaces (title, headings, intro, FAQ, key lines, body).
  * Uses topic-token fallback when pageQuestions is empty so coverage does not collapse to zero.
@@ -151,92 +305,6 @@ export function computeSearchQuestionCoverage(
   input: CoverageMatchInput
 ): boolean[] {
   if (!canonicalSearchQuestions || canonicalSearchQuestions.length === 0) return [];
-
-  const primaryLower = (
-    input.pageTitle +
-    '\n' +
-    input.headingsText +
-    '\n' +
-    input.prioritySurface +
-    '\n' +
-    input.pageQuestions.join(' ')
-  )
-    .toLowerCase();
-
-  const fullLower = input.fullContent.toLowerCase();
-  const topicSet = new Set(input.topicTokens.filter((t) => t.length >= 2));
-  const covered: boolean[] = [];
-
-  for (const searchQ of canonicalSearchQuestions) {
-    const searchTokens = tokenizeForMatch(searchQ.text, 2);
-    if (searchTokens.length === 0) {
-      covered.push(false);
-      continue;
-    }
-
-    const minMatch = Math.max(1, Math.ceil(searchTokens.length * TOKEN_MATCH_RATIO));
-
-    const countIn = (blob: string) => searchTokens.filter((t) => blob.includes(t)).length;
-
-    if (countIn(primaryLower) >= minMatch) {
-      covered.push(true);
-      continue;
-    }
-
-    if (countIn(fullLower) >= minMatch) {
-      covered.push(true);
-      continue;
-    }
-
-    if (input.pageQuestions.length > 0) {
-      const minIntersection =
-        searchTokens.length <= SHORT_QUESTION_TOKEN_THRESHOLD ? MIN_INTERSECTION_SHORT : MIN_INTERSECTION;
-      let coveredByPageQ = false;
-      for (const pageQ of input.pageQuestions) {
-        const pageTokens = tokenizeForMatch(pageQ, 2);
-        const intersection = searchTokens.filter((t) => pageTokens.includes(t));
-        if (intersection.length >= minIntersection) {
-          coveredByPageQ = true;
-          break;
-        }
-      }
-      if (coveredByPageQ) {
-        covered.push(true);
-        continue;
-      }
-    }
-
-    const mq = meaningfulTokens(searchQ.text);
-    if (mq.length > 0) {
-      const blob = `${primaryLower}\n${fullLower}`;
-      let hits = 0;
-      for (const t of mq) {
-        if (blob.includes(t)) hits++;
-      }
-      if (hits / mq.length >= MEANINGFUL_COVERAGE_RATIO) {
-        covered.push(true);
-        continue;
-      }
-    }
-
-    let topicChecks = 0;
-    let topicHits = 0;
-    for (const t of searchTokens) {
-      const inTopic =
-        topicSet.has(t) ||
-        input.topicTokens.some((tt) => tt.includes(t) || (t.length >= 3 && tt.includes(t)));
-      if (inTopic) {
-        topicChecks++;
-        if (primaryLower.includes(t) || fullLower.includes(t)) topicHits++;
-      }
-    }
-    if (topicChecks >= 1 && topicHits >= Math.max(1, Math.ceil(topicChecks * 0.5))) {
-      covered.push(true);
-      continue;
-    }
-
-    covered.push(false);
-  }
-
-  return covered;
+  const surfaces = buildCoverageSurfaces(input);
+  return canonicalSearchQuestions.map((q) => evaluateSearchQuestionCoverageRow(q, input, surfaces).covered);
 }

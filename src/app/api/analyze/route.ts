@@ -8,7 +8,7 @@ import {
 } from '@/lib/serverAnalysisMemoryCache';
 import { supabase, supabaseAdmin, isSupabaseReachable } from '@/lib/supabase';
 import { isAnalysisCacheEntryValid } from '@/lib/geoCacheTtl';
-import { loadActiveScoringConfig } from '@/lib/scoringConfigLoader';
+import { invalidateConfigCache, loadActiveScoringConfig } from '@/lib/scoringConfigLoader';
 import { saveGeoAnalysisResult } from '@/lib/saveGeoAnalysisResult';
 
 // 타입들을 외부에서도 사용할 수 있도록 re-export
@@ -169,6 +169,11 @@ export async function POST(req: Request) {
 
     const forceRefresh = body.forceRefresh === true;
 
+    // Fresh analysis must see latest geo_scoring_config (guideRules, issueRules). Server-side config cache is 5m TTL.
+    if (forceRefresh) {
+      invalidateConfigCache();
+    }
+
     const currentGeoConfigVersion = (await loadActiveScoringConfig()).version ?? null;
 
     if (forceRefresh) {
@@ -178,6 +183,7 @@ export async function POST(req: Request) {
           bypassReason: 'forceRefresh',
           normalizedUrl,
           memoryAndSupabaseCachesSkipped: true,
+          geoScoringConfigCacheInvalidated: true,
         })
       );
     }
@@ -207,6 +213,19 @@ export async function POST(req: Request) {
             allGeminiGenerateContentSkipped: true,
           })
         );
+        if (process.env.QUESTION_COVERAGE_TRACE === '1') {
+          console.log(
+            '[QUESTION_COVERAGE_TRACE]',
+            JSON.stringify({
+              stage: 'analyze_api',
+              normalizedUrl,
+              analysisResultCacheUsed: true,
+              cacheLayer: 'memory',
+              runAnalysisInvoked: false,
+              note: 'Stale pipeline logs not emitted; use forceRefresh:true to re-run Question Coverage trace.',
+            })
+          );
+        }
         const safeMem = { ...memHit } as AnalysisResult;
         if (Array.isArray(safeMem.llmStatuses)) {
           safeMem.llmStatuses = safeMem.llmStatuses.map((s) => {
@@ -252,6 +271,19 @@ export async function POST(req: Request) {
             allGeminiGenerateContentSkipped: true,
           })
         );
+        if (process.env.QUESTION_COVERAGE_TRACE === '1') {
+          console.log(
+            '[QUESTION_COVERAGE_TRACE]',
+            JSON.stringify({
+              stage: 'analyze_api',
+              normalizedUrl,
+              analysisResultCacheUsed: true,
+              cacheLayer: 'supabase',
+              runAnalysisInvoked: false,
+              note: 'Stale pipeline logs not emitted; use forceRefresh:true to re-run Question Coverage trace.',
+            })
+          );
+        }
         // Strip any LLM user-facing messages from cached result to avoid showing quota text in UI.
         const safeCached = { ...cached } as AnalysisResult;
         if (Array.isArray(safeCached.llmStatuses)) {
@@ -286,10 +318,24 @@ export async function POST(req: Request) {
         forceRefresh,
       })
     );
+    if (process.env.QUESTION_COVERAGE_TRACE === '1') {
+      console.log(
+        '[QUESTION_COVERAGE_TRACE]',
+        JSON.stringify({
+          stage: 'analyze_api',
+          normalizedUrl,
+          analysisResultCacheUsed: false,
+          requestForceRefresh: forceRefresh,
+          note: forceRefresh
+            ? 'Memory/Supabase analysis cache skipped by forceRefresh; runAnalysis receives forceRefresh (question research cache read skipped).'
+            : 'Cache miss or stale; full runAnalysis. Question research cache may still hit unless forceRefresh.',
+        })
+      );
+    }
     const appOrigin = typeof req.url === 'string' ? new URL(req.url).origin : undefined;
     // Always analyze using canonical normalizedUrl so PC / PostView / m.blog inputs share identical
     // fetch + scoring paths (inputUrl inside runAnalysis matches normalizedUrl for Naver posts).
-    const result = await runAnalysis(normalizedUrl, { appOrigin });
+    const result = await runAnalysis(normalizedUrl, { appOrigin, forceRefresh });
     const displayResult = withRequestDisplayUrl(result, url);
 
     setMemoryCachedAnalysis(normalizedUrl, displayResult);
