@@ -18,9 +18,9 @@ export const supabaseAdmin = process.env.SUPABASE_SERVICE_ROLE_KEY
   : null;
 
 /**
- * Lightweight connectivity check for the REST API (same project as `supabase` client).
- * Uses raw `fetch` to `/rest/v1/` — not a table query, so RLS on app tables does not apply here.
- * Sends `apikey` + `Authorization: Bearer` like @supabase/supabase-js (HEAD-only was missing Bearer and often got 401).
+ * Lightweight connectivity check (same credentials as `supabase` client).
+ * Uses `GET /auth/v1/health` with anon JWT — not PostgREST `/rest/v1/` root, because many projects
+ * return 401 for anonymous access to the REST root even when table queries work.
  */
 export async function isSupabaseReachable(): Promise<boolean> {
   if (_supabaseReachabilityConfirmed) return true;
@@ -32,8 +32,7 @@ export async function isSupabaseReachable(): Promise<boolean> {
     console.log('[SUPABASE REACHABILITY]', {
       supabaseUrlPresent,
       anonKeyPresent,
-      usesServiceRoleForReachability: false,
-      checkDescription: 'raw fetch to PostgREST root /rest/v1/ (HEAD then optional GET); not supabase-js table read',
+      checkDescription: 'GET /auth/v1/health with apikey + Bearer (anon)',
     });
   }
 
@@ -47,18 +46,19 @@ export async function isSupabaseReachable(): Promise<boolean> {
     return false;
   }
 
-  const restRoot = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/`;
+  const base = supabaseUrl.replace(/\/$/, '');
+  const healthUrl = `${base}/auth/v1/health`;
   const restHeaders: HeadersInit = {
     apikey: supabaseAnonKey,
     Authorization: `Bearer ${supabaseAnonKey}`,
   };
 
-  const runCheck = async (method: 'HEAD' | 'GET'): Promise<Response> => {
+  const runCheck = async (): Promise<Response> => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 3000);
     try {
-      return await fetch(restRoot, {
-        method,
+      return await fetch(healthUrl, {
+        method: 'GET',
         headers: restHeaders,
         signal: ctrl.signal,
       });
@@ -68,36 +68,20 @@ export async function isSupabaseReachable(): Promise<boolean> {
   };
 
   try {
-    let res = await runCheck('HEAD');
-    const headAccepted = res.ok || res.status === 400;
+    const res = await runCheck();
+    const ok = res.ok;
     if (dbg) {
       console.log('[SUPABASE REACHABILITY]', {
-        step: 'HEAD',
-        requestUrl: restRoot,
+        step: 'GET_auth_health',
+        requestUrl: healthUrl,
         status: res.status,
-        acceptedAsReachable: headAccepted,
+        ok,
       });
     }
-
-    if (!headAccepted) {
-      res = await runCheck('GET');
-      const getAccepted = res.ok || res.status === 400;
-      if (dbg) {
-        console.log('[SUPABASE REACHABILITY]', {
-          step: 'GET_fallback',
-          requestUrl: restRoot,
-          status: res.status,
-          acceptedAsReachable: getAccepted,
-        });
-      }
-      if (getAccepted) {
-        _supabaseReachabilityConfirmed = true;
-      }
-      return getAccepted;
+    if (ok) {
+      _supabaseReachabilityConfirmed = true;
     }
-
-    _supabaseReachabilityConfirmed = true;
-    return true;
+    return ok;
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : String(e);
     if (dbg) {
