@@ -1,5 +1,7 @@
 /**
  * HTML fetch for analysis: normalized_url stays canonical (m.blog for Naver posts).
+ * Non-Naver: {@link resolveFetchTargetUrl} may rewrite host (e.g. apex → www) for the actual request
+ * while callers keep using normalizedUrl for cache keys and extraction `pageUrl`.
  * Naver: mobile (m.blog) is tried aggressively (retry + headless) before any PC/PostView URL.
  */
 
@@ -7,6 +9,7 @@ import { computeNaverMobileBodyMetrics } from './articleExtraction';
 import { fetchHtml } from './htmlAnalyzer';
 import { fetchHtmlViaHeadless } from './headlessHtmlFetch';
 import { parseNaverBlogPostFromUrlString } from './canonicalizePlatformUrl';
+import { resolveFetchTargetUrl } from './resolveFetchTargetUrl';
 
 /** How HTML was retrieved for non-Naver URLs (proxy may return 502 when upstream blocks bots). */
 export type HtmlFetchTransport = 'proxy' | 'direct' | 'headless';
@@ -18,12 +21,12 @@ export type HtmlFetchTransport = 'proxy' | 'direct' | 'headless';
 export async function fetchHtmlWithRobustTransport(
   targetUrl: string,
   appOrigin?: string
-): Promise<{ html: string; transport: HtmlFetchTransport }> {
+): Promise<{ html: string; transport: HtmlFetchTransport; fetchedUrl: string }> {
   const errors: string[] = [];
 
   try {
-    const html = await fetchHtml(targetUrl, appOrigin);
-    return { html, transport: appOrigin ? 'proxy' : 'direct' };
+    const { html, fetchedUrl } = await fetchHtml(targetUrl, appOrigin);
+    return { html, transport: appOrigin ? 'proxy' : 'direct', fetchedUrl };
   } catch (e) {
     errors.push(e instanceof Error ? e.message : String(e));
   }
@@ -31,8 +34,8 @@ export async function fetchHtmlWithRobustTransport(
   if (appOrigin) {
     try {
       console.warn('[GEO_FETCH] transport fallback: direct (proxy failed)', { targetUrl });
-      const html = await fetchHtml(targetUrl, undefined);
-      return { html, transport: 'direct' };
+      const { html, fetchedUrl } = await fetchHtml(targetUrl, undefined);
+      return { html, transport: 'direct', fetchedUrl };
     } catch (e) {
       errors.push(e instanceof Error ? e.message : String(e));
     }
@@ -41,7 +44,7 @@ export async function fetchHtmlWithRobustTransport(
   try {
     console.warn('[GEO_FETCH] transport fallback: headless', { targetUrl });
     const html = await fetchHtmlViaHeadless(targetUrl);
-    return { html, transport: 'headless' };
+    return { html, transport: 'headless', fetchedUrl: targetUrl };
   } catch (e) {
     errors.push(e instanceof Error ? e.message : String(e));
     throw new Error(`Failed to fetch ${targetUrl}: ${errors.join(' | ')}`);
@@ -177,6 +180,8 @@ function buildNaverPcFallbackCandidates(
 export type FetchHtmlForAnalysisResult = {
   html: string;
   usedFetchUrl: string;
+  /** Effective URL after HTTP redirects when available (see {@link fetchHtml} / proxy header). */
+  finalFetchedUrl: string;
   naverUsedPcFallback: boolean;
   naverMobileUsedHeadless: boolean;
   /** Set when non-Naver path used {@link fetchHtmlWithRobustTransport}. */
@@ -191,16 +196,16 @@ async function fetchNaverMobileAggressive(
   normalizedUrl: string,
   appOrigin?: string
 ): Promise<
-  | { ok: true; html: string; naverMobileUsedHeadless: boolean }
+  | { ok: true; html: string; naverMobileUsedHeadless: boolean; finalFetchedUrl: string }
   | { ok: false; lastError: string }
 > {
   let lastErr = '';
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const html = await fetchHtml(mobileUrl, appOrigin);
+      const { html, fetchedUrl } = await fetchHtml(mobileUrl, appOrigin);
       const ev = evaluateNaverMobileHtml(html);
       if (!ev.insufficient) {
-        return { ok: true, html, naverMobileUsedHeadless: false };
+        return { ok: true, html, naverMobileUsedHeadless: false, finalFetchedUrl: fetchedUrl };
       }
       lastErr = `mobile_rejected:${ev.reason}`;
       console.warn(
@@ -237,7 +242,7 @@ async function fetchNaverMobileAggressive(
     const html = await fetchHtmlViaHeadless(mobileUrl);
     const evH = evaluateNaverMobileHtml(html);
     if (!evH.insufficient) {
-      return { ok: true, html, naverMobileUsedHeadless: true };
+      return { ok: true, html, naverMobileUsedHeadless: true, finalFetchedUrl: mobileUrl };
     }
     lastErr = `headless_mobile_rejected:${evH.reason}`;
     console.warn(
@@ -278,10 +283,12 @@ export async function fetchHtmlWithNaverFallback(
     parseNaverBlogPostFromUrlString(normalizedUrl) ?? parseNaverBlogPostFromUrlString(inputUrl.trim());
 
   if (!parsed) {
-    const { html, transport } = await fetchHtmlWithRobustTransport(normalizedUrl, appOrigin);
+    const fetchTargetUrl = resolveFetchTargetUrl(normalizedUrl);
+    const { html, transport, fetchedUrl } = await fetchHtmlWithRobustTransport(fetchTargetUrl, appOrigin);
     return {
       html,
-      usedFetchUrl: normalizedUrl,
+      usedFetchUrl: fetchTargetUrl,
+      finalFetchedUrl: fetchedUrl,
       naverUsedPcFallback: false,
       naverMobileUsedHeadless: false,
       fetchTransport: transport,
@@ -296,6 +303,7 @@ export async function fetchHtmlWithNaverFallback(
     return {
       html: mobilePhase.html,
       usedFetchUrl: mobileUrl,
+      finalFetchedUrl: mobilePhase.finalFetchedUrl,
       naverUsedPcFallback: false,
       naverMobileUsedHeadless: mobilePhase.naverMobileUsedHeadless,
     };
@@ -308,7 +316,7 @@ export async function fetchHtmlWithNaverFallback(
   for (let i = 0; i < candidates.length; i++) {
     const fetchTargetUrl = candidates[i]!;
     try {
-      const html = await fetchHtml(fetchTargetUrl, appOrigin);
+      const { html, fetchedUrl } = await fetchHtml(fetchTargetUrl, appOrigin);
       console.warn(
         '[GEO_FETCH_SUMMARY]',
         JSON.stringify({
@@ -321,6 +329,7 @@ export async function fetchHtmlWithNaverFallback(
       return {
         html,
         usedFetchUrl: fetchTargetUrl,
+        finalFetchedUrl: fetchedUrl,
         naverUsedPcFallback: true,
         naverMobileUsedHeadless: false,
       };

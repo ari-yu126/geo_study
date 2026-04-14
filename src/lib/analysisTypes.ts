@@ -391,7 +391,11 @@ export type PlatformType =
 export type QuestionSourceStatus = 'tavily_success' | 'tavily_failed' | 'fallback_only';
 
 export interface AnalysisResult {
-  /** User-submitted URL (trimmed). Primary UI display; may differ from canonical. */
+  /**
+   * User-facing / openable page URL. Prefer post-redirect fetch URL when available
+   * (`finalFetchedUrl` ?? `analysisFetchTargetUrl` ?? sanitized input). Never use `normalizedUrl`
+   * alone as the primary display link when a fetch target or final URL differs (e.g. apex vs www).
+   */
   url: string;
   /** Canonical URL for cache keys, dedupe, and internal identity (e.g. Naver m.blog, YouTube watch?v=). */
   normalizedUrl: string;
@@ -456,8 +460,15 @@ export interface AnalysisResult {
   extractionIncomplete?: boolean;
   extractionSource?: 'server' | 'headless';
   /**
+   * URL after the last HTTP redirect for the successful HTML fetch when known (Response.url or
+   * proxy `X-GEO-Upstream-Final-Url`). Prefer this for display over `analysisFetchTargetUrl`.
+   */
+  finalFetchedUrl?: string;
+  /**
    * First successful server HTML fetch URL (web path). May differ from normalizedUrl when Naver
-   * mobile fetch fails and PC/PostView fallback succeeds. Undefined for YouTube-only pipeline.
+   * mobile fetch fails and PC/PostView fallback succeeds, or when a non-Naver host uses a
+   * network-preferred hostname (e.g. www) while normalizedUrl stays apex for cache identity.
+   * Undefined for YouTube-only pipeline.
    */
   analysisFetchTargetUrl?: string;
   /** Naver blog: HTML came from blog.naver.com / PostView after mobile+headless mobile could not yield usable body */

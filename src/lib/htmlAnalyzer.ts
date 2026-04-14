@@ -49,11 +49,17 @@ function walkJsonLdNode(node: unknown, acc: JsonLdWalkAccumulator): void {
   }
 }
 
+export type FetchHtmlResult = {
+  html: string;
+  /** Effective document URL after redirects (direct fetch: Response.url; proxy: X-GEO-Upstream-Final-Url). */
+  fetchedUrl: string;
+};
+
 /**
  * 주어진 URL에서 HTML을 가져옵니다.
  * appOrigin이 있으면 프록시 경유 (iframe과 동일한 HTML 사용).
  */
-export async function fetchHtml(url: string, appOrigin?: string): Promise<string> {
+export async function fetchHtml(url: string, appOrigin?: string): Promise<FetchHtmlResult> {
   const fetchUrl = appOrigin
     ? `${appOrigin}/api/proxy?url=${encodeURIComponent(url)}`
     : url;
@@ -108,18 +114,27 @@ export async function fetchHtml(url: string, appOrigin?: string): Promise<string
 
   const html = await response.text();
 
+  let fetchedUrl = url;
+  if (appOrigin) {
+    const upstream = response.headers.get('x-geo-upstream-final-url');
+    if (upstream) fetchedUrl = upstream;
+  } else {
+    fetchedUrl = response.url || url;
+  }
+
   // Debug logging only when GEO_DEBUG=1 to avoid noisy production logs
   if (process.env.GEO_DEBUG === '1') {
     const bodyIdx = html.toLowerCase().indexOf('<body');
     const bodyPreview = bodyIdx >= 0 ? html.substring(bodyIdx, bodyIdx + 500) : html.substring(0, 500);
     console.log('--- HTML 수집 결과 ---');
     console.log('URL:', url);
+    console.log('Fetched URL:', fetchedUrl);
     console.log('HTML 길이:', html.length);
     console.log('Body 내용 일부:', bodyPreview);
     console.log('---------------------');
   }
 
-  return html;
+  return { html, fetchedUrl };
 }
 
 export type ExtractMetaOptions = {

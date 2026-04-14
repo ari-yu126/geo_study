@@ -35,17 +35,17 @@ function getInitialUrlSanitized(): string {
   const raw = params.get("url") ?? "";
   const sanitized = sanitizeIncomingAnalyzeUrl(raw);
   if (!sanitized) return "";
-  return normalizeUrl(sanitized);
+  /** Keep user/query form (e.g. www); server normalizes for cache. */
+  return sanitized;
 }
 
-/** POST /api/analyze — forceRefresh defaults false (cache-friendly). Body uses canonical URL (e.g. Naver → m.blog). */
-function postAnalyzeRequest(targetUrl: string, forceRefresh: boolean) {
-  const trimmed = sanitizeIncomingAnalyzeUrl(targetUrl);
-  const canonical = trimmed ? normalizeUrl(trimmed) : "";
+/** POST /api/analyze — body.url is sanitized raw input; server derives normalizedUrl for cache. */
+function postAnalyzeRequest(sanitizedUrl: string, forceRefresh: boolean) {
+  const trimmed = sanitizeIncomingAnalyzeUrl(sanitizedUrl);
   return fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: canonical, forceRefresh }),
+    body: JSON.stringify({ url: trimmed, forceRefresh }),
   });
 }
 
@@ -108,17 +108,16 @@ export default function Home() {
   const currentAnalyzedUrlRef = useRef<string>("");
   const highlightedElRef = useRef<{ el: HTMLElement; originalBg: string; originalBoxShadow: string } | null>(null);
 
-  // Polluted ?url=... (e.g. &forceRefresh merged into value): sync address bar to sanitized form once
+  // Polluted ?url=...: strip debug flags etc. without forcing apex/www canonicalization in the address bar.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const raw = params.get("url");
     if (raw == null || raw === "") return;
     const clean = sanitizeIncomingAnalyzeUrl(raw);
-    const canonical = clean ? normalizeUrl(clean) : "";
-    if (canonical && canonical !== raw) {
+    if (clean && clean !== raw) {
       const u = new URL(window.location.href);
-      u.searchParams.set("url", canonical);
+      u.searchParams.set("url", clean);
       window.history.replaceState({}, "", u.toString());
     }
   }, []);
@@ -181,7 +180,7 @@ export default function Home() {
     const canonical = normalizeUrl(clean);
     const forceRefresh = options?.forceRefresh === true;
 
-    setUrl(canonical);
+    setUrl(clean);
 
     setStatus("loading");
     setError("");
@@ -202,7 +201,7 @@ export default function Home() {
     }, 800);
 
     try {
-      const res = await postAnalyzeRequest(canonical, forceRefresh);
+      const res = await postAnalyzeRequest(clean, forceRefresh);
 
       clearInterval(stepInterval);
       setLoadingStep(LOADING_STEPS.length - 1);
@@ -215,7 +214,7 @@ export default function Home() {
 
       const data = await res.json();
       const resResult = data.result as import("@/lib/analysisTypes").AnalysisResult;
-      setResult({ ...resResult, url: canonical });
+      setResult(resResult);
       setAnalyzeMeta({
         fromCache: Boolean(data.fromCache),
         cacheLayer: typeof data.cacheLayer === "string" ? data.cacheLayer : "none",
@@ -230,11 +229,11 @@ export default function Home() {
       setIframeSrc(previewSrc);
       setIframeDirectFallback(usedDirectFallback);
       setStatus("success");
-      setUrl(canonical);
-      currentAnalyzedUrlRef.current = canonical;
+      setUrl(resResult.url);
+      currentAnalyzedUrlRef.current = resResult.normalizedUrl;
 
       const browserUrl = new URL(window.location.href);
-      browserUrl.searchParams.set("url", canonical);
+      browserUrl.searchParams.set("url", resResult.url);
       window.history.replaceState({}, "", browserUrl.toString());
     } catch (err) {
       clearInterval(stepInterval);
@@ -254,18 +253,19 @@ export default function Home() {
     currentAnalyzedUrlRef.current = canonical;
 
     try {
-      const res = await postAnalyzeRequest(canonical, false);
+      const res = await postAnalyzeRequest(clean, false);
 
       if (!res.ok) return;
 
       const data = await res.json();
       const resResult = data.result as AnalysisResult;
-      setResult({ ...resResult, url: canonical });
+      setResult(resResult);
       setAnalyzeMeta({
         fromCache: Boolean(data.fromCache),
         cacheLayer: typeof data.cacheLayer === "string" ? data.cacheLayer : "none",
       });
-      setUrl(canonical);
+      setUrl(resResult.url);
+      currentAnalyzedUrlRef.current = resResult.normalizedUrl;
 
       const topChunks = (resResult.chunkCitations ?? [])
         .slice()
@@ -278,7 +278,7 @@ export default function Home() {
       setIframeDirectFallback(usedDirectFallback);
 
       const browserUrl = new URL(window.location.href);
-      browserUrl.searchParams.set("url", canonical);
+      browserUrl.searchParams.set("url", resResult.url);
       window.history.replaceState({}, "", browserUrl.toString());
     } catch {
       // 백그라운드 재분석 실패 시 기존 결과 유지

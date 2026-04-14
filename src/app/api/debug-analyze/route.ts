@@ -18,7 +18,7 @@ export async function POST(req: Request) {
     const url = body.url as string;
 
     // 1) HTML 가져오기
-    const html = await fetchHtml(url);
+    const { html } = await fetchHtml(url);
 
     // 2) 메타/헤딩/본문/질문 추출
     const { meta, headings, contentText, pageQuestions } = extractMetaAndContent(html);

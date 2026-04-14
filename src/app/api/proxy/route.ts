@@ -604,11 +604,14 @@ export async function GET(req: NextRequest) {
       html += posScript;
     }
 
+    const upstreamFinalUrl = response.url || url;
     return new NextResponse(html, {
       status: 200,
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
+        /** Server-side HTML fetch reads this to recover the upstream URL after redirects. */
+        'X-GEO-Upstream-Final-Url': upstreamFinalUrl,
       },
     });
   } catch (err) {

@@ -796,6 +796,11 @@ export default function AuditPanel({
   }, []);
 
   useEffect(() => {
+    setUrlInput(result.url);
+    setCommittedUrl(result.url);
+  }, [result.url, result.normalizedUrl]);
+
+  useEffect(() => {
     setAiWritingExamplesOpen(false);
     setAiWritingExamplesLoading(false);
     setAiWritingExamplesError(null);

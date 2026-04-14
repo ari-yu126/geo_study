@@ -40,9 +40,19 @@ function withResolvedGeoConfigVersion(
   return { ...r, geoConfigVersion: r.geoConfigVersion ?? currentGeoConfigVersion ?? null };
 }
 
-/** User-facing URL for UI: always the sanitized request URL, never canonical-only (e.g. m.blog). */
-function withRequestDisplayUrl(r: AnalysisResult, requestUrl: string): AnalysisResult {
-  return { ...r, url: requestUrl };
+/**
+ * Ensures `result.url` is openable/displayable: post-redirect fetch URL → fetch target → prior value → request.
+ * Cache rows may predate `finalFetchedUrl`; this merges safely on read.
+ */
+function withResolvedDisplayUrl(r: AnalysisResult, requestSanitizedUrl: string): AnalysisResult {
+  const display =
+    r.finalFetchedUrl ?? r.analysisFetchTargetUrl ?? r.url ?? requestSanitizedUrl;
+  return { ...r, url: display };
+}
+
+function logGeoUrlTrace(payload: Record<string, unknown>): void {
+  if (process.env.GEO_URL_TRACE !== '1') return;
+  console.log('[GEO_URL_TRACE]', JSON.stringify(payload));
 }
 
 // TODO: analysis_history 테이블 컬럼명이 다를 경우 이 부분을 실제 스키마에 맞게 조정할 것
@@ -240,14 +250,23 @@ export async function POST(req: Request) {
             return rest as any;
           });
         }
+        const memOut = withResolvedDisplayUrl(
+          withResolvedGeoConfigVersion(safeMem, currentGeoConfigVersion),
+          url
+        );
+        logGeoUrlTrace({
+          layer: 'memory',
+          inputUrl: url,
+          normalizedUrl,
+          fetchTargetUrl: memOut.analysisFetchTargetUrl,
+          finalFetchedUrl: memOut.finalFetchedUrl,
+          resultUrl: memOut.url,
+        });
         return NextResponse.json(
           {
             fromCache: true,
             cacheLayer: 'memory',
-            result: withRequestDisplayUrl(
-              withResolvedGeoConfigVersion(safeMem, currentGeoConfigVersion),
-              url
-            ),
+            result: memOut,
           },
           { status: 200 }
         );
@@ -301,14 +320,23 @@ export async function POST(req: Request) {
             return rest as any;
           });
         }
+        const sbOut = withResolvedDisplayUrl(
+          withResolvedGeoConfigVersion(safeCached, currentGeoConfigVersion),
+          url
+        );
+        logGeoUrlTrace({
+          layer: 'supabase',
+          inputUrl: url,
+          normalizedUrl,
+          fetchTargetUrl: sbOut.analysisFetchTargetUrl,
+          finalFetchedUrl: sbOut.finalFetchedUrl,
+          resultUrl: sbOut.url,
+        });
         return NextResponse.json(
           {
             fromCache: true,
             cacheLayer: 'supabase',
-            result: withRequestDisplayUrl(
-              withResolvedGeoConfigVersion(safeCached, currentGeoConfigVersion),
-              url
-            ),
+            result: sbOut,
           },
           { status: 200 }
         );
@@ -344,10 +372,16 @@ export async function POST(req: Request) {
       );
     }
     const appOrigin = typeof req.url === 'string' ? new URL(req.url).origin : undefined;
-    // Always analyze using canonical normalizedUrl so PC / PostView / m.blog inputs share identical
-    // fetch + scoring paths (inputUrl inside runAnalysis matches normalizedUrl for Naver posts).
-    const result = await runAnalysis(normalizedUrl, { appOrigin, forceRefresh });
-    const displayResult = withRequestDisplayUrl(result, url);
+    // Pass sanitized request URL so runAnalysis can keep inputUrl (display chain) distinct from normalizedUrl.
+    const result = await runAnalysis(url, { appOrigin, forceRefresh });
+    const displayResult = withResolvedDisplayUrl(result, url);
+    logGeoUrlTrace({
+      inputUrl: url,
+      normalizedUrl,
+      fetchTargetUrl: result.analysisFetchTargetUrl,
+      finalFetchedUrl: result.finalFetchedUrl,
+      resultUrl: displayResult.url,
+    });
 
     setMemoryCachedAnalysis(normalizedUrl, displayResult);
 

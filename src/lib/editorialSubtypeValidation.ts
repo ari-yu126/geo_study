@@ -96,7 +96,7 @@ export async function validateEditorialSubtypeForUrl(
   }
 
   try {
-    const html = await fetchHtml(trimmed, options?.appOrigin);
+    const { html } = await fetchHtml(trimmed, options?.appOrigin);
     const extracted = extractMetaAndContent(html);
     const {
       meta,

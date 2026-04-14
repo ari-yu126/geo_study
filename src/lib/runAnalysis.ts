@@ -173,7 +173,7 @@ async function runAnalysisImpl(
       if (ytMeta?.title || ytMeta?.description) {
         meta = youtubeMetadataToAnalysisMeta(ytMeta);
       } else {
-        const html = await fetchHtml(url, appOrigin);
+        const { html } = await fetchHtml(url, appOrigin);
         const extracted = extractMetaAndContent(html, { pageUrl: normalizedUrl });
         meta = extracted.meta;
       }
@@ -603,6 +603,7 @@ async function runAnalysisImpl(
 
     let html: string;
     let serverFetchTargetUrl: string;
+    let serverFinalFetchedUrl: string;
     let naverFetchUsedPcFallback = false;
     let naverMobileFetchUsedHeadless = false;
     let nonNaverFetchTransport: HtmlFetchTransport | undefined;
@@ -611,10 +612,12 @@ async function runAnalysisImpl(
       const fetched = await fetchHtmlWithNaverFallback(inputUrl, normalizedUrl, appOrigin);
       html = fetched.html;
       serverFetchTargetUrl = fetched.usedFetchUrl;
+      serverFinalFetchedUrl = fetched.finalFetchedUrl;
       naverFetchUsedPcFallback = fetched.naverUsedPcFallback;
       naverMobileFetchUsedHeadless = fetched.naverMobileUsedHeadless;
       nonNaverFetchTransport = fetched.fetchTransport;
     }
+    const displayOpenUrl = serverFinalFetchedUrl ?? serverFetchTargetUrl ?? inputUrl;
     const analysisFetchWarning: string | null = naverFetchUsedPcFallback
       ? '모바일(m.blog)에서 본문을 가져오지 못해 PC/PostView URL로 분석했습니다. m.blog URL로 직접 열 때와 점수·지표가 달라질 수 있습니다.'
       : null;
@@ -638,7 +641,8 @@ async function runAnalysisImpl(
           console.log('[GEO_EXTRACTION]', {
             normalized_url: normalizedUrl,
             fetch_target_url: serverFetchTargetUrl,
-            url: normalizedUrl,
+            final_fetched_url: serverFinalFetchedUrl,
+            display_open_url: displayOpenUrl,
             host: analysisHostFromUrl,
             server: preMetrics,
             headless: postMetrics,
@@ -1506,7 +1510,7 @@ async function runAnalysisImpl(
     });
 
     const coreResult: AnalysisResult = {
-      url: inputUrl,
+      url: displayOpenUrl,
       normalizedUrl,
       analyzedAt: new Date().toISOString(),
       geoConfigVersion,
@@ -1539,6 +1543,7 @@ async function runAnalysisImpl(
       hasStructuredData,
       extractionIncomplete,
       extractionSource,
+      finalFetchedUrl: serverFinalFetchedUrl,
       analysisFetchTargetUrl: serverFetchTargetUrl,
       naverFetchUsedPcFallback: naverFetchUsedPcFallback || undefined,
       analysisFetchWarning,

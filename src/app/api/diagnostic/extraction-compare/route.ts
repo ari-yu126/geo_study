@@ -19,7 +19,7 @@ export async function POST(req: Request) {
 
     const appOrigin = typeof req.url === 'string' ? new URL(req.url).origin : undefined;
 
-    const serverHtml = await fetchHtml(url, appOrigin);
+    const { html: serverHtml } = await fetchHtml(url, appOrigin);
     const serverExtracted = extractMetaAndContent(serverHtml);
     const serverMetrics = computeExtractionMetrics(serverHtml);
     const serverChunks = extractChunks(serverHtml, 15);
