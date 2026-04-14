@@ -4,7 +4,7 @@ This document defines the **GEO axis importance model** and **weight philosophy*
 
 It is a **philosophy and model-definition** document: it explains *why* the scoring system is organized around these axes and tiers. It does **not** specify implementation details, code paths, or numeric formulas.
 
-**Related:** scoring architecture (`03-scoring-system.md`), system invariants (`13-system-invariants.md`), monthly config philosophy (`10-scoring-issue-philosophy.md`).
+**Related:** scoring architecture (`03-scoring-system.md`), system invariants (`11-system-philosophy-and-architecture-rules.md` §9), monthly config philosophy (`10-scoring-issue-philosophy.md`).
 
 ---
 
@@ -119,4 +119,4 @@ The importance ranking and weight philosophy will be **updated over time** using
 - **Stratified analysis** by **page type** and **editorial subtype**, so axes are not over-interpreted from a single segment.
 - **Question-set audits** when **questionMatch** / **questionCoverage** behave unexpectedly relative to real user queries.
 
-Until then, this document states the **default mental model** for axis importance and weighting philosophy; implementation continues to follow **`03-scoring-system.md`**, **`13-system-invariants.md`**, and the active monthly configuration.
+Until then, this document states the **default mental model** for axis importance and weighting philosophy; implementation continues to follow **`03-scoring-system.md`**, **`11-system-philosophy-and-architecture-rules.md`** (§9 invariants), and the active monthly configuration.

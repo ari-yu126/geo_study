@@ -120,7 +120,7 @@ UI and analysis logic should focus on: **AI answerability**, **extractability**,
 - **Issues** — missing signals, weak signals, structural gaps, trust gaps (rule- and config-driven; categories such as missing_signals, weak_signals, structural, trust).  
 - **Strengths** — strong GEO signals **already present** (passed checks / `geoExplain.passed`).  
 - **Opportunities** — highest-impact, prioritized improvements (issue-linked, weak-axis, optional monthly templates).  
-- **Recommendations** — narrative **strategy** guidance (action plans, headings, blocks) built on analysis, often LLM-generated with template fallback.
+- **Recommendations** — narrative **strategy** guidance (action plans, headings, blocks) built on analysis using **deterministic** rules, templates, and optional monthly **`guideRules`** (no Gemini on this path).
 
 **Relationship (concise):** Issues **explain problems**; Strengths **explain what is already good**; Opportunities **explain what to do next**; Recommendations **explain how to do it**. Full diagram and definitions: **`10-scoring-issue-philosophy.md`** → section **Issues, Strengths, Opportunities, Recommendations**.
 
@@ -202,3 +202,92 @@ GEO Analyzer is a layered evaluation system consisting of:
 5. Explain layer (issues, strengths, opportunities)
 6. Recommendation layer
 7. UI visualization layer
+
+---
+
+## 9. System invariants
+
+This section states **core system invariants**: architectural rules that should **not** change unless the GEO Analyzer is **redesigned** on purpose. It is **conceptual** only—no implementation details, file paths, or formulas.
+
+### 9.1 GEO score structure
+
+The GEO score is **always** derived from **axis scores**. The final score is **not** computed directly from raw signals as the primary path.
+
+Conceptual flow:
+
+```text
+Signals → Axis Scores → Monthly & Fixed Score → Blending → Caps → Final Score
+```
+
+Raw extraction and heuristics feed **axis scores**; the headline GEO score is built from those axes through blending and caps—not by collapsing raw HTML into one number without an axis layer.
+
+### 9.2 Monthly vs fixed separation
+
+**Monthly GEO config** (research-backed, versioned configuration) typically controls:
+
+- Weights (per page-type profiles)
+- `issueRules`
+- `passedRules`
+- `opportunityTemplates`
+- `queryTemplates`
+- `scoreBlendAlpha` (when present)
+
+**Fixed engine** (product runtime, always present):
+
+- Extraction logic
+- Axis score calculation
+- Trust cap
+- Commerce overrides
+- Citation fallback
+- Scoring safeguards
+
+**Invariant:** Monthly config **adjusts emphasis and strategy**, not the **entire** algorithm. The fixed engine defines the skeleton; monthly config tunes what matters most and what to surface in Explain.
+
+### 9.3 Axis scores are the core layer
+
+Axis scores are the **central representation** of page quality for GEO. Issues, strengths, opportunities, and recommendations are **derived** from axis scores (and rules applied to the same underlying features), not parallel unrelated scores.
+
+```text
+Axis Scores → Explain Layer → Strategy Layer
+```
+
+### 9.4 Issues do not compute score
+
+**Scores are computed first.** Issues **explain** the outcome; they do **not** determine the numeric final score.
+
+- **Scoring computes.**
+- **Issues explain.**
+
+Issue lists may guide opportunities and copy, but they are not the source of truth for `finalScore`.
+
+### 9.5 Opportunities come from issues and weak axes
+
+Opportunities are generated from:
+
+- **Issues** (what is wrong or missing)
+- **Weak axes** (below-threshold or low partial scores)
+- **Monthly opportunity templates** (when configured)
+
+They are **prioritized improvement hypotheses**, not a replacement for scoring.
+
+### 9.6 Recommendations are narrative layer
+
+Recommendations are **strategy and narrative**—how to improve—built **on top of** opportunities and broader analysis. They should **not** directly compute scores. Their role is guidance, not to replace the scoring or Explain layers.
+
+### 9.7 Layered architecture rule
+
+The system **must** remain **layered**. Conceptual order:
+
+```text
+Monthly Config
+  → Extraction / Signals
+  → Axis Scores
+  → Score Blending
+  → Explain Layer
+  → Recommendation Layer
+  → UI
+```
+
+**Invariant:** No layer should **skip** another layer in a way that breaks meaning—for example, recommendations should not silently replace axis scoring; UI should not invent scores without the scoring stack. Redesigns may change **how** a layer works, not the **existence** of these responsibilities without an explicit architectural decision.
+
+*This subsection is architectural and conceptual only.*

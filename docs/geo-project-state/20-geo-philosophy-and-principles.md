@@ -2,7 +2,7 @@
 
 This document defines **how the GEO Analyzer should think and evolve**—core **philosophy** and **principles**—not implementation details, APIs, or formulas.
 
-It complements authoritative architecture rules (`11-system-philosophy-and-architecture-rules.md`, `13-system-invariants.md`) and product documents (`14`–`19`). When in doubt, **invariants** and **scoring architecture** docs remain the source of structural truth; this file states **values and reasoning** that guide decisions.
+It complements authoritative architecture rules (`11-system-philosophy-and-architecture-rules.md`, including **§9 — System invariants**) and product documents (`14`–`19`). When in doubt, **invariants** and **scoring architecture** docs remain the source of structural truth; this file states **values and reasoning** that guide decisions.
 
 ---
 
@@ -87,7 +87,7 @@ Two layers keep the system **stable** yet **adaptable**:
 | **Fixed engine** | **Stable core** — extraction, axis definitions, blending **structure**, branch behavior (editorial / commerce / video), guardrails. Users expect **predictable** behavior month to month. |
 | **Monthly GEO configuration** | **Tuning** — weights, **emphasis** on issues and opportunities, **strategy** framing, blend alpha. Monthly updates reflect **research, markets, and product focus** without rewriting the entire engine. |
 
-Monthly config **extends and tunes**; it **does not** replace the whole algorithm (`09-geo-research-policy.md`, `13-system-invariants.md`). When the monthly profile is incomplete, **defaults** keep the system **safe and operational**.
+Monthly config **extends and tunes**; it **does not** replace the whole algorithm (`09-geo-research-policy.md`, `11-system-philosophy-and-architecture-rules.md` §9). When the monthly profile is incomplete, **defaults** keep the system **safe and operational**.
 
 ---
 

@@ -122,6 +122,16 @@ export function computeEngineFixedWeights5(ctx: FinalBlendContext): AxisScores5 
   };
 }
 
+/** Same normalization as inside scoreFromWeights7 — for debug / API exposure. */
+export function normalizeAxisWeights7(w: AxisScores7): AxisScores7 {
+  return normalize7(w);
+}
+
+/** Same normalization as inside scoreFromWeights5 — for debug / API exposure. */
+export function normalizeAxisWeights5(w: AxisScores5): AxisScores5 {
+  return normalize5(w);
+}
+
 function normalize7(w: AxisScores7): AxisScores7 {
   const t =
     w.citation +
@@ -254,6 +264,7 @@ export function buildBlendDebug(params: {
   commerceMonthlyScore?: number;
   commerceFixedScore?: number;
   commerceBlendedScore?: number;
+  blendAxisWeights?: GeoScoreBlendDebug['blendAxisWeights'];
 }): GeoScoreBlendDebug {
   const a = params.blendAlpha;
   const mc = a * params.monthlyScore;
@@ -271,6 +282,7 @@ export function buildBlendDebug(params: {
     commerceMonthlyScore: params.commerceMonthlyScore,
     commerceFixedScore: params.commerceFixedScore,
     commerceBlendedScore: params.commerceBlendedScore,
+    ...(params.blendAxisWeights ? { blendAxisWeights: params.blendAxisWeights } : {}),
   };
 }
 

@@ -2,7 +2,7 @@
 
 This document defines a **product and platform roadmap** for the GEO Analyzer: from today’s **single-page analysis** capabilities toward a **full GEO platform**. It is **strategic and directional**—not a delivery commitment, sprint plan, or technical specification.
 
-**Related:** system architecture (`18-geo-system-overview-and-architecture.md`), GEO report (`17-geo-report-system.md`), competitor comparison (`15-geo-competitor-comparison-system.md`).
+**Related:** system architecture (`00-system-overview.md`), GEO report (`17-geo-report-system.md`), competitor comparison (`15-geo-competitor-comparison-system.md`).
 
 ---
 
@@ -15,12 +15,12 @@ Today’s system already spans the **core analysis pipeline** and several **down
 | **Analysis** | Fetch/extract content, detect page type, build signals. |
 | **Scoring** | Axis scores, blended **GEO score**, branch-specific behavior (editorial / commerce / video). |
 | **Explanation** | **Issues**, **strengths (passed)**, **opportunities** tied to rules and axes. |
-| **Recommendations** | Strategy and next-step guidance (templates and/or LLM per policy). |
+| **Recommendations** | Strategy and next-step guidance from **deterministic** rules, templates, and optional monthly **`guideRules`** (main path); optional AI writing examples remain a separate surface. |
 | **Competitor comparison** | Multi-URL framing: cited vs non-cited, SERP peers, axis and explain deltas (`15-geo-competitor-comparison-system.md`). |
 | **Score interpretation** | Conceptual bands and categories—not raw numbers alone (`16-geo-score-interpretation-model.md`). |
 | **GEO report generation logic** | Structured synthesis: summary, axes, issues/strengths/opportunities, comparison, recommendations, action plan (`17-geo-report-system.md`). |
 
-Maturity may vary by surface (UI vs batch vs API); the **roadmap** assumes these **capabilities** continue to **share one coherent model** (`18-geo-system-overview-and-architecture.md`).
+Maturity may vary by surface (UI vs batch vs API); the **roadmap** assumes these **capabilities** continue to **share one coherent model** (`00-system-overview.md`).
 
 ---
 
@@ -94,4 +94,4 @@ The long-term bet is that **every serious web property** will need **both**—an
 | **Phases** | Single URL → comparison & report → monitoring → crawl scale → optimization platform → API ecosystem. |
 | **Vision** | **GEO as a category** parallel to SEO, focused on **AI search and answer engines**. |
 
-This roadmap is **product-level**; implementation choices belong in engineering plans and architecture docs (`03`, `05`, `18`, etc.).
+This roadmap is **product-level**; implementation choices belong in engineering plans and architecture docs (`03`, `05`, `00-system-overview.md`, etc.).

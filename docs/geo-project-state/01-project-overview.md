@@ -112,5 +112,5 @@ URL input → Analysis → Scoring → Recommendation → UI / Report
 
 ## 📌 Notes
 
-- GEO scoring combines rule-based evaluation and LLM-based citation analysis  
-- Recommendation generation is deterministic + LLM-assisted (Gemini)
+- GEO scoring combines rule-based evaluation and LLM-based citation analysis (where enabled).  
+- **Main panel recommendations** are **deterministic** (rules, templates, optional monthly `guideRules`). Optional **AI writing examples** use Gemini via a separate API when the user requests them.

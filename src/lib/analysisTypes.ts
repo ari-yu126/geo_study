@@ -37,6 +37,26 @@ export interface CitationFallbackDebug {
   compositeQuality?: number | null;
 }
 
+/** Normalized weights used inside scoreFromWeights7 (sum ≈ 1). */
+export interface BlendAxisWeights7Debug {
+  citation: number;
+  paragraph: number;
+  answerability: number;
+  structure: number;
+  trust: number;
+  questionMatch: number;
+  questionCoverage: number;
+}
+
+/** Normalized weights used inside scoreFromWeights5 (sum ≈ 1). */
+export interface BlendAxisWeights5Debug {
+  paragraph: number;
+  answerability: number;
+  structure: number;
+  trust: number;
+  questionMatch: number;
+}
+
 /** Explainability: monthly vs fixed backbone blend (editorial/web path). */
 export interface GeoScoreBlendDebug {
   blendAlpha: number;
@@ -52,6 +72,13 @@ export interface GeoScoreBlendDebug {
   commerceMonthlyScore?: number;
   commerceFixedScore?: number;
   commerceBlendedScore?: number;
+  /**
+   * Per-axis weights actually used in fixedScore / monthlyScore (after normalize7/5).
+   * Check `paragraph` here — e.g. 0 when FAQ / high question-match branch zeroed paragraph in fixed engine.
+   */
+  blendAxisWeights?:
+    | { variant: '7'; fixed: BlendAxisWeights7Debug; monthly: BlendAxisWeights7Debug }
+    | { variant: '5'; fixed: BlendAxisWeights5Debug; monthly: BlendAxisWeights5Debug };
 }
 
 /** Answerability audit — per config rule + heuristics (debug only; not a second scorer) */
@@ -139,6 +166,30 @@ export interface GeoScores {
     /** Points added to finalScore (0–10) */
     amount: number;
   };
+  /**
+   * Final GEO score immediately before issue-severity penalty (after blend, trust caps, commerce override, naver penalty, editorial boost).
+   * Set by `applyIssueBasedFinalScorePenalty` on every analysis path; equals pre-penalty `finalScore`.
+   * Relation: `finalScore === clamp(preIssuePenaltyFinalScore - issuePenaltyPoints)`.
+   */
+  preIssuePenaltyFinalScore?: number;
+  /** Capped severity sum subtracted from `preIssuePenaltyFinalScore` (0 if no penalty). */
+  issuePenaltyPoints?: number;
+  /** Present only when `issuePenaltyPoints > 0` — full breakdown for debugging. */
+  issuePenaltyDebug?: IssuePenaltyDebug;
+}
+
+/** Post-blend adjustment from audit issue severities — not an axis score change. */
+export interface IssuePenaltyDebug {
+  /** Sum of per-issue penalties before cap */
+  rawPenaltyPoints: number;
+  /** Points actually subtracted after cap */
+  cappedPenaltyPoints: number;
+  /** Max total penalty (configurable in code) */
+  cap: number;
+  /** Per-severity issue counts included in the sum */
+  counts: { high: number; medium: number; low: number };
+  /** Penalty points per severity tier used in calculation */
+  pointsPerTier: { high: number; medium: number; low: number };
 }
 
 export interface ParagraphAnalysis {

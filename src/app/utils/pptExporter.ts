@@ -498,100 +498,6 @@ export async function exportToPPT(
     }
   }
 
-  // SLIDE 3+: 잘된 점 (전체 행 · AuditPanel에서 View More 펼친 것과 동일 문구)
-  {
-    const AUDIT_BODY_TOP = 1.02;
-    const AUDIT_BODY_MAX = 6.88;
-    const strengthBoxX = 0.5;
-    const strengthBoxW = 12;
-    const strengthInnerPad = 0.08;
-    const strengthTextW = strengthBoxW - 2 * strengthInnerPad;
-    const strengthTitlePt = 12;
-    const rowGap = 0.14;
-
-    let slideRef = addAuditSectionSlide(R.pptAuditStrengthsSlideTitle, false);
-    let y = AUDIT_BODY_TOP;
-    if (strengthRows.length === 0) {
-      const emptyH = pptTextBoxHeightInchesI18n(R.pptStrengthsEmpty, strengthTextW, 10, 1.45);
-      const emptyBoxH = emptyH + 2 * strengthInnerPad;
-      if (y + emptyBoxH > AUDIT_BODY_MAX) {
-        slideRef = addAuditSectionSlide(R.pptAuditStrengthsSlideTitle, true);
-        y = AUDIT_BODY_TOP;
-      }
-      slideRef.addShape(pptx.ShapeType.roundRect, {
-        x: strengthBoxX,
-        y,
-        w: strengthBoxW,
-        h: emptyBoxH,
-        fill: { color: SURFACE },
-        line: { color: BORDER, pt: 1 },
-        rectRadius: 0.12,
-      });
-      slideRef.addText(R.pptStrengthsEmpty, {
-        x: strengthBoxX + strengthInnerPad,
-        y: y + strengthInnerPad,
-        w: strengthTextW,
-        h: emptyH,
-        fontSize: 10,
-        color: MUTED,
-        fontFace: "Arial",
-        wrap: true,
-      });
-    } else {
-      const innerLeft = strengthBoxX + strengthInnerPad;
-      for (const row of strengthRows) {
-        const hasScoreHighlight = strengthPptHasScoreHighlightLine(row);
-        const titleLine = strengthPptPrimaryTitleLine(row);
-        const bodyText = strengthPptBodyAfterTitle(row, hasScoreHighlight).trim();
-        const titleRowH = pptTextBoxHeightInchesI18n(titleLine, strengthTextW, strengthTitlePt, 1.22, { bold: true });
-        const bodyH = bodyText.length
-          ? pptTextBoxHeightInchesI18n(bodyText, strengthTextW, 9, 1.52) + 0.14
-          : 0;
-        const textStackH = titleRowH + (bodyH > 0 ? 0.12 + bodyH : 0);
-        const textH = textStackH + 0.06;
-        const boxH = textH + 2 * strengthInnerPad;
-        if (y + boxH > AUDIT_BODY_MAX) {
-          slideRef = addAuditSectionSlide(R.pptAuditStrengthsSlideTitle, true);
-          y = AUDIT_BODY_TOP;
-        }
-        const contentY = y + strengthInnerPad;
-        slideRef.addShape(pptx.ShapeType.roundRect, {
-          x: strengthBoxX,
-          y,
-          w: strengthBoxW,
-          h: boxH,
-          fill: { color: SURFACE },
-          line: { color: BORDER, pt: 1 },
-          rectRadius: 0.12,
-        });
-        slideRef.addText(titleLine, {
-          x: innerLeft,
-          y: contentY,
-          w: strengthTextW,
-          h: titleRowH,
-          fontSize: strengthTitlePt,
-          bold: true,
-          color: TEXT,
-          fontFace: "Arial",
-          wrap: true,
-        });
-        if (bodyH > 0) {
-          slideRef.addText(bodyText, {
-            x: innerLeft,
-            y: contentY + titleRowH + 0.12,
-            w: strengthTextW,
-            h: bodyH,
-            fontSize: 9,
-            color: TEXT,
-            fontFace: "Arial",
-            wrap: true,
-          });
-        }
-        y += boxH + rowGap;
-      }
-    }
-  }
-
   // SLIDE: 발견된 이슈 (전체)
   {
     const AUDIT_BODY_TOP = 1.02;
@@ -717,451 +623,6 @@ export async function exportToPPT(
       }
     }
   }
-
-  // SLIDE 4: 키워드
-  {
-    const s = pptx.addSlide();
-    s.background = { color: BG };
-    s.addText(R.keywordsSlideTitle, { x: 0.5, y: 0.3, w: 12, h: 0.55, fontSize: 22, bold: true, color: TEXT, fontFace: "Arial" });
-    s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 0.88, w: 12, h: 0.03, fill: { color: SECTION_TITLE_RULE }, line: { type: "none" } });
-
-    const keywords = result.seedKeywords?.slice(0, 20) ?? [];
-    const colors = ["5B6EF5", "00D4C8", "F5A623", "F05C7A", "34D399"];
-    const boxX = 0.5;
-    const boxW = 12;
-    const innerPad = 0.22;
-    const lineStep = 0.6;
-    const chipH = 0.42;
-    const chipGapX = 0.18;
-    const boxTop = 1.06;
-    const contentLeft = boxX + innerPad;
-    const maxX = boxX + boxW - innerPad;
-
-    if (keywords.length === 0) {
-      const emptyTitleH = pptTextBoxHeightInches(R.keywordsEmptyTitle, boxW - 2 * innerPad, 14);
-      const emptyHintH = pptTextBoxHeightInches(R.keywordsEmptyHint, boxW - 2 * innerPad, 11);
-      const emptyBoxH = innerPad + emptyTitleH + 0.12 + emptyHintH + innerPad;
-      s.addShape(pptx.ShapeType.roundRect, {
-        x: boxX,
-        y: boxTop,
-        w: boxW,
-        h: emptyBoxH,
-        fill: { color: SURFACE },
-        line: { color: BORDER, pt: 1 },
-        rectRadius: 0.12,
-      });
-      s.addText(R.keywordsEmptyTitle, {
-        x: contentLeft,
-        y: boxTop + innerPad,
-        w: boxW - 2 * innerPad,
-        h: emptyTitleH,
-        fontSize: 14,
-        color: MUTED,
-        fontFace: "Arial",
-        wrap: true,
-      });
-      s.addText(R.keywordsEmptyHint, {
-        x: contentLeft,
-        y: boxTop + innerPad + emptyTitleH + 0.12,
-        w: boxW - 2 * innerPad,
-        h: emptyHintH,
-        fontSize: 11,
-        color: MUTED,
-        fontFace: "Arial",
-        wrap: true,
-      });
-    } else {
-      let kx = contentLeft;
-      let ky = boxTop + innerPad;
-      let maxBottom = ky;
-      const placements: { x: number; y: number; w: number; kw: (typeof keywords)[0]; i: number }[] = [];
-      keywords.forEach((kw, i) => {
-        let estW = kw.value.length * 0.13 + 0.5;
-        if (kx + estW > maxX && kx > contentLeft) {
-          kx = contentLeft;
-          ky += lineStep;
-        }
-        if (kx + estW > maxX) {
-          estW = Math.max(0.55, maxX - kx);
-        }
-        placements.push({ x: kx, y: ky, w: estW, kw, i });
-        maxBottom = Math.max(maxBottom, ky + chipH);
-        kx += estW + chipGapX;
-      });
-      const boxH = maxBottom - boxTop + innerPad;
-      s.addShape(pptx.ShapeType.roundRect, {
-        x: boxX,
-        y: boxTop,
-        w: boxW,
-        h: boxH,
-        fill: { color: SURFACE },
-        line: { color: BORDER, pt: 1 },
-        rectRadius: 0.12,
-      });
-      placements.forEach(({ x, y, w, kw, i }) => {
-        const col = colors[i % colors.length];
-        const fontSize = kw.score > 0.6 ? 14 : kw.score > 0.3 ? 11 : 9;
-        s.addShape(pptx.ShapeType.roundRect, {
-          x,
-          y,
-          w,
-          h: chipH,
-          fill: { color: col, transparency: 82 },
-          line: { color: col, pt: 1 },
-          rectRadius: 0.18,
-        });
-        s.addText(kw.value, {
-          x,
-          y,
-          w,
-          h: chipH,
-          fontSize,
-          color: TEXT,
-          align: "center",
-          fontFace: "Arial",
-          bold: kw.score > 0.6,
-          valign: "middle",
-        });
-      });
-    }
-  }
-
-  // SLIDE 5+: 메타 태그 (키워드 직후 — Title / OG Title / Canonical 은 첫 슬라이드에 묶음, 설명 필드는 이어서 · 넘치면 계속 슬라이드)
-  {
-    const META_BODY_TOP = 1.02;
-    const META_BODY_MAX = 6.88;
-    const cardX = 0.5;
-    const cardW = 12;
-    const innerX = 0.7;
-    const textW = 11;
-    const metaLabelFontPt = 12;
-    const labelRowH = 0.36;
-    const padT = 0.12;
-    const padB = 0.16;
-    const gapLabelToValue = 0.12;
-    const betweenCards = 0.12;
-    /** Tighter stack so Title + OG Title + Canonical stay on one slide when possible */
-    const betweenHeadCards = 0.1;
-
-    const addMetaSlideHeader = (continued: boolean) => {
-      const slide = pptx.addSlide();
-      slide.background = { color: BG };
-      const t = continued ? R.metaTagsSlideTitle + R.pptAuditSectionContinued : R.metaTagsSlideTitle;
-      slide.addText(t, {
-        x: 0.5,
-        y: 0.26,
-        w: 12,
-        h: 0.58,
-        fontSize: 22,
-        bold: true,
-        color: TEXT,
-        fontFace: "Arial",
-        wrap: true,
-      });
-      slide.addShape(pptx.ShapeType.rect, {
-        x: 0.5,
-        y: 0.88,
-        w: 12,
-        h: 0.03,
-        fill: { color: SECTION_TITLE_RULE },
-        line: { type: "none" },
-      });
-      return slide;
-    };
-
-    type MetaFieldRow = { label: string; value: string | null | undefined; required: boolean };
-
-    const metaHeadItems: MetaFieldRow[] = [
-      { label: R.metaLabelTitle, value: result.meta.title, required: true },
-      { label: R.metaLabelOgTitle, value: result.meta.ogTitle, required: false },
-      { label: R.metaLabelCanonical, value: result.meta.canonical, required: false },
-    ];
-    const metaTailItems: MetaFieldRow[] = [
-      { label: R.metaLabelMetaDescription, value: result.meta.description, required: true },
-      { label: R.metaLabelOgDescription, value: result.meta.ogDescription, required: false },
-    ];
-
-    const renderMetaCard = (
-      item: MetaFieldRow,
-      iy: number,
-      s: ReturnType<typeof addMetaSlideHeader>
-    ): void => {
-      const present = !!item.value?.trim();
-      const raw = item.value?.trim() ?? "";
-      const displayValue = present
-        ? raw.slice(0, 600) + (raw.length > 600 ? "…" : "")
-        : R.metaUnset;
-      const col = present ? "34D399" : item.required ? "F05C7A" : MUTED;
-      const lineColor = present ? TEXT : col;
-      const valueH = pptTextBoxHeightInchesI18n(displayValue, textW, 11, 1.52) + 0.2;
-      const cardH = padT + labelRowH + gapLabelToValue + valueH + padB;
-
-      s.addShape(pptx.ShapeType.roundRect, {
-        x: cardX,
-        y: iy,
-        w: cardW,
-        h: cardH,
-        fill: { color: SURFACE },
-        line: { color: present ? "1E3A2A" : item.required ? "3A1E24" : BORDER, pt: 1 },
-        rectRadius: 0.1,
-      });
-      s.addText(`${item.label}${item.required ? R.metaRequiredMark : ""}`, {
-        x: innerX,
-        y: iy + padT,
-        w: 6.2,
-        h: labelRowH,
-        fontSize: metaLabelFontPt,
-        bold: true,
-        color: MUTED,
-        fontFace: "Arial",
-        valign: "top",
-      });
-      s.addText(present ? R.metaPresent : R.metaAbsent, {
-        x: 10.35,
-        y: iy + padT,
-        w: 2,
-        h: labelRowH,
-        fontSize: 10,
-        color: col,
-        align: "right",
-        fontFace: "Arial",
-        valign: "top",
-      });
-      s.addText(displayValue, {
-        x: innerX,
-        y: iy + padT + labelRowH + gapLabelToValue,
-        w: textW,
-        h: valueH,
-        fontSize: 11,
-        color: lineColor,
-        fontFace: "Arial",
-        wrap: true,
-      });
-    };
-
-    const cardHeight = (item: MetaFieldRow): number => {
-      const present = !!item.value?.trim();
-      const raw = item.value?.trim() ?? "";
-      const displayValue = present
-        ? raw.slice(0, 600) + (raw.length > 600 ? "…" : "")
-        : R.metaUnset;
-      const valueH = pptTextBoxHeightInchesI18n(displayValue, textW, 11, 1.52) + 0.2;
-      return padT + labelRowH + gapLabelToValue + valueH + padB;
-    };
-
-    let slideRef = addMetaSlideHeader(false);
-    let y = META_BODY_TOP;
-
-    for (let i = 0; i < metaHeadItems.length; i++) {
-      const item = metaHeadItems[i]!;
-      const h = cardHeight(item);
-      const gapAfter = i < metaHeadItems.length - 1 ? betweenHeadCards : betweenCards;
-      renderMetaCard(item, y, slideRef);
-      y += h + gapAfter;
-    }
-
-    for (const item of metaTailItems) {
-      const h = cardHeight(item);
-      if (y + h > META_BODY_MAX) {
-        slideRef = addMetaSlideHeader(true);
-        y = META_BODY_TOP;
-      }
-      renderMetaCard(item, y, slideRef);
-      y += h + betweenCards;
-    }
-  }
-
-  // SLIDE 5b: 콘텐츠 개선 가이드 — 세로 순서: 요약 → 갭 → 우선작업 → 소제목 → 추천 블록(콘텐츠 보완 포인트 아래)
-  if (result.recommendations?.actionPlan) {
-    const rec = result.recommendations;
-    const ap = rec.actionPlan;
-    const actionGuideTitle = geoReportGuideTitle(result.pageType);
-    const headingsLabel = geoReportHeadingsSectionLabel(result.pageType);
-    const improvementSummaryLabel =
-      result.pageType === "video"
-        ? secKo.improvementSummaryVideo
-        : result.pageType === "editorial" && result.reviewLike
-          ? secKo.improvementSummaryReview
-          : secKo.improvementSummary;
-    const s = pptx.addSlide();
-    s.background = { color: BG };
-    /** Same title / rule / body top as 키워드·종합 GEO 점수 슬라이드 (line y=0.88, content ≈1.06). */
-    s.addText(actionGuideTitle, { x: 0.5, y: 0.3, w: 12, h: 0.55, fontSize: 22, bold: true, color: TEXT, fontFace: "Arial", wrap: true });
-    s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 0.88, w: 12, h: 0.03, fill: { color: SECTION_TITLE_RULE }, line: { type: "none" } });
-
-    const bodyX = 0.65;
-    const bodyW = 11.4;
-    let iy = 1.06;
-
-    const trendText = clipPptLine(rec.trendSummary, 320);
-    if (trendText) {
-      s.addText(improvementSummaryLabel, {
-        x: bodyX,
-        y: iy,
-        w: bodyW,
-        h: 0.26,
-        fontSize: 10,
-        bold: true,
-        color: "A5B4FC",
-        fontFace: "Arial",
-      });
-      iy += 0.3;
-      const trendH = pptTextBoxHeightInches(trendText, bodyW, 10);
-      s.addText(trendText, {
-        x: bodyX,
-        y: iy,
-        w: bodyW,
-        h: trendH,
-        fontSize: 10,
-        color: TEXT,
-        fontFace: "Arial",
-        wrap: true,
-      });
-      iy += trendH + 0.2;
-    }
-
-    const gapText = clipPptLine(rec.contentGapSummary, 400);
-    if (gapText) {
-      s.addText(secKo.contentGaps, {
-        x: bodyX,
-        y: iy,
-        w: bodyW,
-        h: 0.26,
-        fontSize: 10,
-        bold: true,
-        color: "A5B4FC",
-        fontFace: "Arial",
-      });
-      iy += 0.3;
-      const gapH = pptTextBoxHeightInches(gapText, bodyW, 9);
-      s.addText(gapText, {
-        x: bodyX,
-        y: iy,
-        w: bodyW,
-        h: gapH,
-        fontSize: 9,
-        color: MUTED,
-        fontFace: "Arial",
-        wrap: true,
-      });
-      iy += gapH + 0.22;
-    }
-
-    if (ap.priorityNotes && ap.priorityNotes.length > 0) {
-      s.addText(secKo.priorityActions, {
-        x: bodyX,
-        y: iy,
-        w: bodyW,
-        h: 0.26,
-        fontSize: 10,
-        bold: true,
-        color: "F5A623",
-        fontFace: "Arial",
-      });
-      iy += 0.32;
-      ap.priorityNotes.slice(0, 5).forEach((note, idx) => {
-        const line = clipPptLine(note, 220);
-        const numbered = `${idx + 1}. ${line}`;
-        const nh = pptTextBoxHeightInches(numbered, bodyW - 0.15, 9);
-        s.addText(numbered, {
-          x: bodyX + 0.06,
-          y: iy,
-          w: bodyW - 0.12,
-          h: nh,
-          fontSize: 9,
-          color: "F5D7A8",
-          fontFace: "Arial",
-          wrap: true,
-        });
-        iy += nh + 0.08;
-      });
-      iy += 0.12;
-    }
-
-    if (ap.suggestedHeadings.length > 0) {
-      s.addText(headingsLabel, {
-        x: bodyX,
-        y: iy,
-        w: bodyW,
-        h: 0.28,
-        fontSize: 11,
-        bold: true,
-        color: "5B6EF5",
-        fontFace: "Arial",
-      });
-      iy += 0.34;
-      const headingPad = 0.12;
-      const headingInnerW = bodyW - 2 * headingPad;
-      ap.suggestedHeadings.forEach((h) => {
-        const line = `- ${h}`;
-        const innerH = pptTextBoxHeightInchesI18n(line, headingInnerW, 10, 1.45) + 0.06;
-        const boxH = innerH + 2 * headingPad;
-        s.addShape(pptx.ShapeType.roundRect, {
-          x: bodyX,
-          y: iy,
-          w: bodyW,
-          h: boxH,
-          fill: { color: SURFACE },
-          line: { color: BORDER, pt: 1 },
-          rectRadius: 0.1,
-        });
-        s.addText(line, {
-          x: bodyX + headingPad,
-          y: iy + headingPad,
-          w: headingInnerW,
-          h: innerH,
-          fontSize: 10,
-          color: TEXT,
-          fontFace: "Arial",
-          wrap: true,
-        });
-        iy += boxH + 0.1;
-      });
-      iy += 0.14;
-    }
-
-    if (ap.suggestedBlocks.length > 0) {
-      s.addText(R.recommendedBlocks, {
-        x: bodyX,
-        y: iy,
-        w: bodyW,
-        h: 0.28,
-        fontSize: 11,
-        bold: true,
-        color: "00D4C8",
-        fontFace: "Arial",
-      });
-      iy += 0.34;
-      const blockPad = 0.12;
-      const blockInnerW = bodyW - 2 * blockPad;
-      ap.suggestedBlocks.forEach((b) => {
-        const line = `- ${b}`;
-        const innerH = pptTextBoxHeightInchesI18n(line, blockInnerW, 10, 1.45) + 0.06;
-        const boxH = innerH + 2 * blockPad;
-        s.addShape(pptx.ShapeType.roundRect, {
-          x: bodyX,
-          y: iy,
-          w: bodyW,
-          h: boxH,
-          fill: { color: SURFACE },
-          line: { color: BORDER, pt: 1 },
-          rectRadius: 0.1,
-        });
-        s.addText(line, {
-          x: bodyX + blockPad,
-          y: iy + blockPad,
-          w: blockInnerW,
-          h: innerH,
-          fontSize: 10,
-          color: TEXT,
-          fontFace: "Arial",
-          wrap: true,
-        });
-        iy += boxH + 0.1;
-      });
-    }
-  }
-
   // SLIDE 6: 질문 커버리지 — AuditPanel과 동일 통합 목록(전체), Top3 중복 블록 없음
   const hasUserQuestions = result.searchQuestions && result.searchQuestions.length > 0;
   const hasAiQuestions =
@@ -1394,6 +855,540 @@ export async function exportToPPT(
         wrap: true,
       });
       y += cardH + 0.12;
+    }
+  }
+  // SLIDE 3+: 잘된 점 (전체 행 · AuditPanel에서 View More 펼친 것과 동일 문구)
+  {
+    const AUDIT_BODY_TOP = 1.02;
+    const AUDIT_BODY_MAX = 6.88;
+    const strengthBoxX = 0.5;
+    const strengthBoxW = 12;
+    const strengthInnerPad = 0.08;
+    const strengthTextW = strengthBoxW - 2 * strengthInnerPad;
+    const strengthTitlePt = 12;
+    const rowGap = 0.14;
+
+    let slideRef = addAuditSectionSlide(R.pptAuditStrengthsSlideTitle, false);
+    let y = AUDIT_BODY_TOP;
+    if (strengthRows.length === 0) {
+      const emptyH = pptTextBoxHeightInchesI18n(R.pptStrengthsEmpty, strengthTextW, 10, 1.45);
+      const emptyBoxH = emptyH + 2 * strengthInnerPad;
+      if (y + emptyBoxH > AUDIT_BODY_MAX) {
+        slideRef = addAuditSectionSlide(R.pptAuditStrengthsSlideTitle, true);
+        y = AUDIT_BODY_TOP;
+      }
+      slideRef.addShape(pptx.ShapeType.roundRect, {
+        x: strengthBoxX,
+        y,
+        w: strengthBoxW,
+        h: emptyBoxH,
+        fill: { color: SURFACE },
+        line: { color: BORDER, pt: 1 },
+        rectRadius: 0.12,
+      });
+      slideRef.addText(R.pptStrengthsEmpty, {
+        x: strengthBoxX + strengthInnerPad,
+        y: y + strengthInnerPad,
+        w: strengthTextW,
+        h: emptyH,
+        fontSize: 10,
+        color: MUTED,
+        fontFace: "Arial",
+        wrap: true,
+      });
+    } else {
+      const innerLeft = strengthBoxX + strengthInnerPad;
+      for (const row of strengthRows) {
+        const hasScoreHighlight = strengthPptHasScoreHighlightLine(row);
+        const titleLine = strengthPptPrimaryTitleLine(row);
+        const bodyText = strengthPptBodyAfterTitle(row, hasScoreHighlight).trim();
+        const titleRowH = pptTextBoxHeightInchesI18n(titleLine, strengthTextW, strengthTitlePt, 1.22, { bold: true });
+        const bodyH = bodyText.length
+          ? pptTextBoxHeightInchesI18n(bodyText, strengthTextW, 9, 1.52) + 0.14
+          : 0;
+        const textStackH = titleRowH + (bodyH > 0 ? 0.12 + bodyH : 0);
+        const textH = textStackH + 0.06;
+        const boxH = textH + 2 * strengthInnerPad;
+        if (y + boxH > AUDIT_BODY_MAX) {
+          slideRef = addAuditSectionSlide(R.pptAuditStrengthsSlideTitle, true);
+          y = AUDIT_BODY_TOP;
+        }
+        const contentY = y + strengthInnerPad;
+        slideRef.addShape(pptx.ShapeType.roundRect, {
+          x: strengthBoxX,
+          y,
+          w: strengthBoxW,
+          h: boxH,
+          fill: { color: SURFACE },
+          line: { color: BORDER, pt: 1 },
+          rectRadius: 0.12,
+        });
+        slideRef.addText(titleLine, {
+          x: innerLeft,
+          y: contentY,
+          w: strengthTextW,
+          h: titleRowH,
+          fontSize: strengthTitlePt,
+          bold: true,
+          color: TEXT,
+          fontFace: "Arial",
+          wrap: true,
+        });
+        if (bodyH > 0) {
+          slideRef.addText(bodyText, {
+            x: innerLeft,
+            y: contentY + titleRowH + 0.12,
+            w: strengthTextW,
+            h: bodyH,
+            fontSize: 9,
+            color: TEXT,
+            fontFace: "Arial",
+            wrap: true,
+          });
+        }
+        y += boxH + rowGap;
+      }
+    }
+  }
+  // SLIDE 5b: 콘텐츠 개선 가이드 — 세로 순서: 요약 → 갭 → 우선작업 → 소제목 → 추천 블록(콘텐츠 보완 포인트 아래)
+  if (result.recommendations?.actionPlan) {
+    const rec = result.recommendations;
+    const ap = rec.actionPlan;
+    const actionGuideTitle = geoReportGuideTitle(result.pageType);
+    const headingsLabel = geoReportHeadingsSectionLabel(result.pageType);
+    const improvementSummaryLabel =
+      result.pageType === "video"
+        ? secKo.improvementSummaryVideo
+        : result.pageType === "editorial" && result.reviewLike
+          ? secKo.improvementSummaryReview
+          : secKo.improvementSummary;
+    const s = pptx.addSlide();
+    s.background = { color: BG };
+    /** Same title / rule / body top as 키워드·종합 GEO 점수 슬라이드 (line y=0.88, content ≈1.06). */
+    s.addText(actionGuideTitle, { x: 0.5, y: 0.3, w: 12, h: 0.55, fontSize: 22, bold: true, color: TEXT, fontFace: "Arial", wrap: true });
+    s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 0.88, w: 12, h: 0.03, fill: { color: SECTION_TITLE_RULE }, line: { type: "none" } });
+
+    const bodyX = 0.65;
+    const bodyW = 11.4;
+    let iy = 1.06;
+
+    const trendText = clipPptLine(rec.trendSummary, 320);
+    if (trendText) {
+      s.addText(improvementSummaryLabel, {
+        x: bodyX,
+        y: iy,
+        w: bodyW,
+        h: 0.26,
+        fontSize: 10,
+        bold: true,
+        color: "A5B4FC",
+        fontFace: "Arial",
+      });
+      iy += 0.3;
+      const trendH = pptTextBoxHeightInches(trendText, bodyW, 10);
+      s.addText(trendText, {
+        x: bodyX,
+        y: iy,
+        w: bodyW,
+        h: trendH,
+        fontSize: 10,
+        color: TEXT,
+        fontFace: "Arial",
+        wrap: true,
+      });
+      iy += trendH + 0.2;
+    }
+
+    const gapText = clipPptLine(rec.contentGapSummary, 400);
+    if (gapText) {
+      s.addText(secKo.contentGaps, {
+        x: bodyX,
+        y: iy,
+        w: bodyW,
+        h: 0.26,
+        fontSize: 10,
+        bold: true,
+        color: "A5B4FC",
+        fontFace: "Arial",
+      });
+      iy += 0.3;
+      const gapH = pptTextBoxHeightInches(gapText, bodyW, 9);
+      s.addText(gapText, {
+        x: bodyX,
+        y: iy,
+        w: bodyW,
+        h: gapH,
+        fontSize: 9,
+        color: MUTED,
+        fontFace: "Arial",
+        wrap: true,
+      });
+      iy += gapH + 0.22;
+    }
+
+    if (ap.priorityNotes && ap.priorityNotes.length > 0) {
+      s.addText(secKo.priorityActions, {
+        x: bodyX,
+        y: iy,
+        w: bodyW,
+        h: 0.26,
+        fontSize: 10,
+        bold: true,
+        color: "F5A623",
+        fontFace: "Arial",
+      });
+      iy += 0.32;
+      ap.priorityNotes.slice(0, 5).forEach((note, idx) => {
+        const line = clipPptLine(note, 220);
+        const numbered = `${idx + 1}. ${line}`;
+        const nh = pptTextBoxHeightInches(numbered, bodyW - 0.15, 9);
+        s.addText(numbered, {
+          x: bodyX + 0.06,
+          y: iy,
+          w: bodyW - 0.12,
+          h: nh,
+          fontSize: 9,
+          color: "F5D7A8",
+          fontFace: "Arial",
+          wrap: true,
+        });
+        iy += nh + 0.08;
+      });
+      iy += 0.12;
+    }
+
+    if (ap.suggestedHeadings.length > 0) {
+      s.addText(headingsLabel, {
+        x: bodyX,
+        y: iy,
+        w: bodyW,
+        h: 0.28,
+        fontSize: 11,
+        bold: true,
+        color: "5B6EF5",
+        fontFace: "Arial",
+      });
+      iy += 0.34;
+      const headingPad = 0.12;
+      const headingInnerW = bodyW - 2 * headingPad;
+      ap.suggestedHeadings.forEach((h) => {
+        const line = `- ${h}`;
+        const innerH = pptTextBoxHeightInchesI18n(line, headingInnerW, 10, 1.45) + 0.06;
+        const boxH = innerH + 2 * headingPad;
+        s.addShape(pptx.ShapeType.roundRect, {
+          x: bodyX,
+          y: iy,
+          w: bodyW,
+          h: boxH,
+          fill: { color: SURFACE },
+          line: { color: BORDER, pt: 1 },
+          rectRadius: 0.1,
+        });
+        s.addText(line, {
+          x: bodyX + headingPad,
+          y: iy + headingPad,
+          w: headingInnerW,
+          h: innerH,
+          fontSize: 10,
+          color: TEXT,
+          fontFace: "Arial",
+          wrap: true,
+        });
+        iy += boxH + 0.1;
+      });
+      iy += 0.14;
+    }
+
+    if (ap.suggestedBlocks.length > 0) {
+      s.addText(R.recommendedBlocks, {
+        x: bodyX,
+        y: iy,
+        w: bodyW,
+        h: 0.28,
+        fontSize: 11,
+        bold: true,
+        color: "00D4C8",
+        fontFace: "Arial",
+      });
+      iy += 0.34;
+      const blockPad = 0.12;
+      const blockInnerW = bodyW - 2 * blockPad;
+      ap.suggestedBlocks.forEach((b) => {
+        const line = `- ${b}`;
+        const innerH = pptTextBoxHeightInchesI18n(line, blockInnerW, 10, 1.45) + 0.06;
+        const boxH = innerH + 2 * blockPad;
+        s.addShape(pptx.ShapeType.roundRect, {
+          x: bodyX,
+          y: iy,
+          w: bodyW,
+          h: boxH,
+          fill: { color: SURFACE },
+          line: { color: BORDER, pt: 1 },
+          rectRadius: 0.1,
+        });
+        s.addText(line, {
+          x: bodyX + blockPad,
+          y: iy + blockPad,
+          w: blockInnerW,
+          h: innerH,
+          fontSize: 10,
+          color: TEXT,
+          fontFace: "Arial",
+          wrap: true,
+        });
+        iy += boxH + 0.1;
+      });
+    }
+  }
+  // SLIDE 4: 키워드
+  {
+    const s = pptx.addSlide();
+    s.background = { color: BG };
+    s.addText(R.keywordsSlideTitle, { x: 0.5, y: 0.3, w: 12, h: 0.55, fontSize: 22, bold: true, color: TEXT, fontFace: "Arial" });
+    s.addShape(pptx.ShapeType.rect, { x: 0.5, y: 0.88, w: 12, h: 0.03, fill: { color: SECTION_TITLE_RULE }, line: { type: "none" } });
+
+    const keywords = result.seedKeywords?.slice(0, 20) ?? [];
+    const colors = ["5B6EF5", "00D4C8", "F5A623", "F05C7A", "34D399"];
+    const boxX = 0.5;
+    const boxW = 12;
+    const innerPad = 0.22;
+    const lineStep = 0.6;
+    const chipH = 0.42;
+    const chipGapX = 0.18;
+    const boxTop = 1.06;
+    const contentLeft = boxX + innerPad;
+    const maxX = boxX + boxW - innerPad;
+
+    if (keywords.length === 0) {
+      const emptyTitleH = pptTextBoxHeightInches(R.keywordsEmptyTitle, boxW - 2 * innerPad, 14);
+      const emptyHintH = pptTextBoxHeightInches(R.keywordsEmptyHint, boxW - 2 * innerPad, 11);
+      const emptyBoxH = innerPad + emptyTitleH + 0.12 + emptyHintH + innerPad;
+      s.addShape(pptx.ShapeType.roundRect, {
+        x: boxX,
+        y: boxTop,
+        w: boxW,
+        h: emptyBoxH,
+        fill: { color: SURFACE },
+        line: { color: BORDER, pt: 1 },
+        rectRadius: 0.12,
+      });
+      s.addText(R.keywordsEmptyTitle, {
+        x: contentLeft,
+        y: boxTop + innerPad,
+        w: boxW - 2 * innerPad,
+        h: emptyTitleH,
+        fontSize: 14,
+        color: MUTED,
+        fontFace: "Arial",
+        wrap: true,
+      });
+      s.addText(R.keywordsEmptyHint, {
+        x: contentLeft,
+        y: boxTop + innerPad + emptyTitleH + 0.12,
+        w: boxW - 2 * innerPad,
+        h: emptyHintH,
+        fontSize: 11,
+        color: MUTED,
+        fontFace: "Arial",
+        wrap: true,
+      });
+    } else {
+      let kx = contentLeft;
+      let ky = boxTop + innerPad;
+      let maxBottom = ky;
+      const placements: { x: number; y: number; w: number; kw: (typeof keywords)[0]; i: number }[] = [];
+      keywords.forEach((kw, i) => {
+        let estW = kw.value.length * 0.13 + 0.5;
+        if (kx + estW > maxX && kx > contentLeft) {
+          kx = contentLeft;
+          ky += lineStep;
+        }
+        if (kx + estW > maxX) {
+          estW = Math.max(0.55, maxX - kx);
+        }
+        placements.push({ x: kx, y: ky, w: estW, kw, i });
+        maxBottom = Math.max(maxBottom, ky + chipH);
+        kx += estW + chipGapX;
+      });
+      const boxH = maxBottom - boxTop + innerPad;
+      s.addShape(pptx.ShapeType.roundRect, {
+        x: boxX,
+        y: boxTop,
+        w: boxW,
+        h: boxH,
+        fill: { color: SURFACE },
+        line: { color: BORDER, pt: 1 },
+        rectRadius: 0.12,
+      });
+      placements.forEach(({ x, y, w, kw, i }) => {
+        const col = colors[i % colors.length];
+        const fontSize = kw.score > 0.6 ? 14 : kw.score > 0.3 ? 11 : 9;
+        s.addShape(pptx.ShapeType.roundRect, {
+          x,
+          y,
+          w,
+          h: chipH,
+          fill: { color: col, transparency: 82 },
+          line: { color: col, pt: 1 },
+          rectRadius: 0.18,
+        });
+        s.addText(kw.value, {
+          x,
+          y,
+          w,
+          h: chipH,
+          fontSize,
+          color: TEXT,
+          align: "center",
+          fontFace: "Arial",
+          bold: kw.score > 0.6,
+          valign: "middle",
+        });
+      });
+    }
+  }
+  // SLIDE 5+: 메타 태그 (키워드 직후 — Title / OG Title / Canonical 은 첫 슬라이드에 묶음, 설명 필드는 이어서 · 넘치면 계속 슬라이드)
+  {
+    const META_BODY_TOP = 1.02;
+    const META_BODY_MAX = 6.88;
+    const cardX = 0.5;
+    const cardW = 12;
+    const innerX = 0.7;
+    const textW = 11;
+    const metaLabelFontPt = 12;
+    const labelRowH = 0.36;
+    const padT = 0.12;
+    const padB = 0.16;
+    const gapLabelToValue = 0.12;
+    const betweenCards = 0.12;
+    /** Tighter stack so Title + OG Title + Canonical stay on one slide when possible */
+    const betweenHeadCards = 0.1;
+
+    const addMetaSlideHeader = (continued: boolean) => {
+      const slide = pptx.addSlide();
+      slide.background = { color: BG };
+      const t = continued ? R.metaTagsSlideTitle + R.pptAuditSectionContinued : R.metaTagsSlideTitle;
+      slide.addText(t, {
+        x: 0.5,
+        y: 0.26,
+        w: 12,
+        h: 0.58,
+        fontSize: 22,
+        bold: true,
+        color: TEXT,
+        fontFace: "Arial",
+        wrap: true,
+      });
+      slide.addShape(pptx.ShapeType.rect, {
+        x: 0.5,
+        y: 0.88,
+        w: 12,
+        h: 0.03,
+        fill: { color: SECTION_TITLE_RULE },
+        line: { type: "none" },
+      });
+      return slide;
+    };
+
+    type MetaFieldRow = { label: string; value: string | null | undefined; required: boolean };
+
+    const metaHeadItems: MetaFieldRow[] = [
+      { label: R.metaLabelTitle, value: result.meta.title, required: true },
+      { label: R.metaLabelOgTitle, value: result.meta.ogTitle, required: false },
+      { label: R.metaLabelCanonical, value: result.meta.canonical, required: false },
+    ];
+    const metaTailItems: MetaFieldRow[] = [
+      { label: R.metaLabelMetaDescription, value: result.meta.description, required: true },
+      { label: R.metaLabelOgDescription, value: result.meta.ogDescription, required: false },
+    ];
+
+    const renderMetaCard = (
+      item: MetaFieldRow,
+      iy: number,
+      s: ReturnType<typeof addMetaSlideHeader>
+    ): void => {
+      const present = !!item.value?.trim();
+      const raw = item.value?.trim() ?? "";
+      const displayValue = present
+        ? raw.slice(0, 600) + (raw.length > 600 ? "…" : "")
+        : R.metaUnset;
+      const col = present ? "34D399" : item.required ? "F05C7A" : MUTED;
+      const lineColor = present ? TEXT : col;
+      const valueH = pptTextBoxHeightInchesI18n(displayValue, textW, 11, 1.52) + 0.2;
+      const cardH = padT + labelRowH + gapLabelToValue + valueH + padB;
+
+      s.addShape(pptx.ShapeType.roundRect, {
+        x: cardX,
+        y: iy,
+        w: cardW,
+        h: cardH,
+        fill: { color: SURFACE },
+        line: { color: present ? "1E3A2A" : item.required ? "3A1E24" : BORDER, pt: 1 },
+        rectRadius: 0.1,
+      });
+      s.addText(`${item.label}${item.required ? R.metaRequiredMark : ""}`, {
+        x: innerX,
+        y: iy + padT,
+        w: 6.2,
+        h: labelRowH,
+        fontSize: metaLabelFontPt,
+        bold: true,
+        color: MUTED,
+        fontFace: "Arial",
+        valign: "top",
+      });
+      s.addText(present ? R.metaPresent : R.metaAbsent, {
+        x: 10.35,
+        y: iy + padT,
+        w: 2,
+        h: labelRowH,
+        fontSize: 10,
+        color: col,
+        align: "right",
+        fontFace: "Arial",
+        valign: "top",
+      });
+      s.addText(displayValue, {
+        x: innerX,
+        y: iy + padT + labelRowH + gapLabelToValue,
+        w: textW,
+        h: valueH,
+        fontSize: 11,
+        color: lineColor,
+        fontFace: "Arial",
+        wrap: true,
+      });
+    };
+
+    const cardHeight = (item: MetaFieldRow): number => {
+      const present = !!item.value?.trim();
+      const raw = item.value?.trim() ?? "";
+      const displayValue = present
+        ? raw.slice(0, 600) + (raw.length > 600 ? "…" : "")
+        : R.metaUnset;
+      const valueH = pptTextBoxHeightInchesI18n(displayValue, textW, 11, 1.52) + 0.2;
+      return padT + labelRowH + gapLabelToValue + valueH + padB;
+    };
+
+    let slideRef = addMetaSlideHeader(false);
+    let y = META_BODY_TOP;
+
+    for (let i = 0; i < metaHeadItems.length; i++) {
+      const item = metaHeadItems[i]!;
+      const h = cardHeight(item);
+      const gapAfter = i < metaHeadItems.length - 1 ? betweenHeadCards : betweenCards;
+      renderMetaCard(item, y, slideRef);
+      y += h + gapAfter;
+    }
+
+    for (const item of metaTailItems) {
+      const h = cardHeight(item);
+      if (y + h > META_BODY_MAX) {
+        slideRef = addMetaSlideHeader(true);
+        y = META_BODY_TOP;
+      }
+      renderMetaCard(item, y, slideRef);
+      y += h + betweenCards;
     }
   }
 

@@ -50,6 +50,7 @@ import type {
   AnalysisResult,
   AnalysisMeta,
   ChunkCitation,
+  GeoScoreBlendDebug,
   GeoScores,
   PageFeatures,
   SearchQuestion,
@@ -79,6 +80,8 @@ import {
   computeEngineFixedWeights7,
   computeMonthlyWeights5,
   computeMonthlyWeights7,
+  normalizeAxisWeights5,
+  normalizeAxisWeights7,
   profileForScoreBlend,
   resolveBlendAlpha,
   scoreFromWeights5,
@@ -97,6 +100,7 @@ import {
 import { fetchHtmlViaHeadless } from './headlessHtmlFetch';
 import { runWithGeminiTrace } from './geminiTraceContext';
 import { computeQualityAdjustment } from './qualityAdjuster';
+import { applyIssueBasedFinalScorePenalty } from './issueFinalScorePenalty';
 
 /** FAQ 성격 페이지 감지: JSON-LD FAQPage 또는 질문형 헤딩 30% 이상 */
 function detectFaqLikePage(params: {
@@ -355,6 +359,7 @@ async function runAnalysisImpl(
         const auditVideo = await deriveAuditIssues(coreResult);
         const { issues, passedChecks, geoIssues, geoPassedItems, opportunities, platformConstraints } =
           auditVideo;
+        applyIssueBasedFinalScorePenalty(coreResult.scores, geoIssues);
         const geoExplainVideo = {
           axisScores: coreResult.axisScores,
           issues: geoIssues,
@@ -550,6 +555,7 @@ async function runAnalysisImpl(
         opportunities: oppsFb,
         platformConstraints: platformConstraintsFb,
       } = auditVideoFb;
+      applyIssueBasedFinalScorePenalty(coreResult.scores, geoIssuesFb);
       const geoExplainVideoFb = {
         axisScores: coreResult.axisScores,
         issues: geoIssuesFb,
@@ -1194,9 +1200,15 @@ async function runAnalysisImpl(
 
     let fixedScore: number;
     let monthlyScore: number;
+    let blendAxisWeights: GeoScoreBlendDebug['blendAxisWeights'];
     if (blendCtx.hasCitationPath) {
       fixedScore = scoreFromWeights7(axes7, fixedW7);
       monthlyScore = scoreFromWeights7(axes7, monthlyW7);
+      blendAxisWeights = {
+        variant: '7',
+        fixed: normalizeAxisWeights7(fixedW7),
+        monthly: normalizeAxisWeights7(monthlyW7),
+      };
     } else {
       const fixedW5 = computeEngineFixedWeights5(blendCtx);
       const monthlyW5 = computeMonthlyWeights5(profileForBlend, fixedW5);
@@ -1209,6 +1221,11 @@ async function runAnalysisImpl(
       };
       fixedScore = scoreFromWeights5(axes5, fixedW5);
       monthlyScore = scoreFromWeights5(axes5, monthlyW5);
+      blendAxisWeights = {
+        variant: '5',
+        fixed: normalizeAxisWeights5(fixedW5),
+        monthly: normalizeAxisWeights5(monthlyW5),
+      };
     }
 
     let finalScore = blendMonthlyAndFixed(monthlyScore, fixedScore, blendAlpha);
@@ -1401,6 +1418,7 @@ async function runAnalysisImpl(
       commerceMonthlyScore: commerceMonthlyForDebug,
       commerceFixedScore: commerceFixedForDebug,
       commerceBlendedScore: commerceBlendedForDebug,
+      blendAxisWeights,
     });
 
     if (shouldLogGeoScoreAxis(url)) {
@@ -1622,6 +1640,8 @@ async function runAnalysisImpl(
         amount: boostPts,
       };
     }
+
+    applyIssueBasedFinalScorePenalty(scores, geoIssues);
 
     const geoExplainWeb = {
       axisScores: coreResult.axisScores,

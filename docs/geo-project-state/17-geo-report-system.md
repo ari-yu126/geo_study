@@ -31,10 +31,12 @@ A full GEO report is organized so readers can move from **executive summary** �
 | **Issues** | Gaps, risks, and weak signals that block or weaken citation. |
 | **Strengths (passed)** | Positive signals and rules already satisfied—credibility and “what to preserve.” |
 | **Opportunities** | Structured improvement areas (often tied to axes and rules). |
-| **Recommendations** | Narrative strategy (LLM- or template-assisted) grounded in opportunities and signals. |
+| **Recommendations** | Content improvement strategy from the deterministic recommendation engine (and optional config `guideRules`), grounded in opportunities and signals. Optional **AI writing examples** (separate API) are user-triggered, not part of the core `GeoRecommendations` object. |
 | **Action plan** | Concrete, ordered steps derived from recommendations (content, structure, schema, etc.). |
 
 Not every deployment must show every section in the same order; **information architecture** should preserve this **logical sequence** (summary first, evidence next, actions last).
+
+**In-app audit panel:** after the score, the web **AuditPanel** surfaces the core blocks as **issues → question coverage → strengths → content improvement guide** (see **`06-ui-and-cache.md`** for rationale and the issue-based final-score note). A packaged GEO report or export may still use a different section order for print or executive readers.
 
 ---
 
@@ -99,7 +101,7 @@ This section **grounds** absolute scores: a “good” number may still be **sec
 
 ## 7. Recommendations and action plan
 
-**Recommendations** translate opportunities and signals into **strategy**—priorities, sequencing, and rationale (often narrative, with template or LLM support per product policy).
+**Recommendations** translate opportunities and signals into **strategy**—priorities, sequencing, and rationale—using **deterministic** templates and rules (and optional monthly **`guideRules`**), not LLM phrasing of the main panel output.
 
 The **action plan** turns recommendations into **concrete, verifiable work items**, for example:
 

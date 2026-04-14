@@ -37,7 +37,13 @@ This document provides a quick index of key files and modules used in the GEO An
 ## Recommendation
 
 - `src/lib/recommendationEngine.ts`  
-  → generates actionable recommendations (skeleton + LLM phrasing)
+  → deterministic content guide (templates + optional monthly `guideRules`; no Gemini)
+
+- `src/lib/recommendations/buildGeoRecommendations.ts`  
+  → `buildGeoRecommendationsFromSignals`
+
+- `src/lib/recommendations/guideRulesMerge.ts`  
+  → merge monthly `guideRules` when triggers match issue/passed ids
 
 ---
 
@@ -68,7 +74,7 @@ This document provides a quick index of key files and modules used in the GEO An
 ## External Services
 
 - **Google Gemini API**  
-  → semantic evaluation (citation scoring, recommendation phrasing)
+  → semantic evaluation (e.g. citation scoring, question filtering, video analysis). **Not** used to phrase the main audit-panel recommendation object; optional writing examples use `POST /api/ai-writing-examples`.
 
 - **Tavily API**  
   → search question collection and filtering

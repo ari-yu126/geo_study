@@ -26,7 +26,7 @@ URL input
   → Monthly vs fixed score blending (alpha) + trust cap + commerce/video branches as applicable
   → Final GEO score
   → Explain Engine (issues, strengths, opportunities)
-  → Recommendation generation (LLM or template fallback)
+  → Recommendation generation (deterministic: rules, templates, optional guideRules)
   → AnalysisResult assembly (scores, geoExplain, recommendations, audit payloads)
   → UI (panel + overlay)
 ```
@@ -108,8 +108,7 @@ runAnalysis(url: string): Promise<AnalysisResult>
    - see **Explain Layer** below
 
 9. **Generate recommendations**  
-   - `generateGeoRecommendations(...)`  
-   - narrative / strategy guidance (headings, FAQ blocks, comparison tables, structure) — often LLM-backed with template fallback  
+   - `generateGeoRecommendations(...)` — **deterministic** narrative guidance (headings, blocks, gap summary, priority notes, predicted questions where applicable) via `buildGeoRecommendationsFromSignals`, optional **`guideRules`** merge from active scoring config, then `filterRecommendationsByPageType`. **No Gemini.**  
 
 10. **Return result**  
    - returns `AnalysisResult` (scores, `geoExplain` when set, recommendations, etc.)  
@@ -160,7 +159,7 @@ Gemini is used only for semantic evaluation:
 All orchestration remains deterministic.
 
 **Operational notes (LLM errors & quota)**  
-- 429 / quota errors: do not retry — set a short cooldown and immediately fall back to template recommendations.  
+- 429 / quota errors on **analysis-time** Gemini calls (e.g. citation, filters): cooldown / skip behavior applies to those steps — **not** to switching the main recommendation engine to an LLM (recommendations stay deterministic).  
 - Non-429 transient errors: may be retried with limited backoff (see retry policy).
 
 ---
@@ -175,7 +174,7 @@ Before executing the pipeline:
   - skip Gemini calls to reduce cost  
 
 **Limited-analysis / short HTML**  
-- If analysis is limited (bot protection, very short HTML, etc.), Gemini calls can be skipped and template-based recommendations (isTemplateFallback) used instead.
+- If analysis is limited, **some** Gemini steps (e.g. citation) may be skipped; the recommendation step still returns **deterministic** output. The legacy helper `generateTemplateRecommendations` may set `isTemplateFallback: true` for template-only callers — separate from the normal `runAnalysis` path.
 
 ---
 
@@ -208,7 +207,7 @@ URL Input
 | **Monthly + Fixed Score Blending** | Combine **profile weights** from Supabase with **fixed engine weights** using blend alpha (`scoreBlendAlpha`); same axes, two weighting views—then trust caps and page-type branches (e.g. commerce override). |
 | **Final GEO Score** | Single headline score (`scores.finalScore`) and breakdown fields for UI and persistence—aligned with GEO “AI citation likelihood.” |
 | **Explain Engine** | Turn numbers and rules into **diagnostics**: **Issues** (gaps), **Strengths** (`passed`), **Opportunities** (prioritized next steps). Uses `geoExplain.*` and audit derivation. |
-| **Recommendation Engine** | Narrative **strategy**: suggested headings, blocks, action plans—often LLM-backed, template fallback on quota/errors. |
+| **Recommendation Engine** | **Strategy copy**: suggested headings, blocks, gap summary, priority notes — **deterministic** (templates + optional `guideRules`). |
 | **AnalysisResult Assembly** | Bundle scores, `geoExplain`, recommendations, metadata, and audit-friendly payloads into one `AnalysisResult` for clients. |
 | **UI (Panel + Overlay + Report)** | Present scores, issues, strengths, opportunities, and recommendations in the product surface (and exports). |
 
@@ -238,8 +237,9 @@ For scoring mechanics (blend alpha, trust caps, commerce), see **`03-scoring-sys
   - `src/lib/geoExplain/`  
   - `src/lib/issueDetector.ts`
 
-- Recommendation engine:  
-  - `src/lib/recommendationEngine.ts`
- - Gemini retry & error handling:
-   - `src/lib/geminiRetry.ts`
-   - `src/lib/llmError.ts`
+- Recommendation engine (deterministic, no Gemini on main path):  
+  - `src/lib/recommendationEngine.ts`  
+  - `src/lib/recommendations/buildGeoRecommendations.ts`  
+- Gemini retry & error handling:  
+  - `src/lib/geminiRetry.ts`  
+  - `src/lib/llmError.ts`

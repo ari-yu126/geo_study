@@ -1431,115 +1431,7 @@ export default function AuditPanel({
         )}
       </div>
 
-      {/* 2. 잘된 점 / Strengths */}
-      <div style={CARD_STYLE}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <GeoStrengthTrophyIcon />
-            <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
-              잘된 점 {strengthRows.length > 0 ? `(${strengthRows.length})` : ""}
-            </span>
-          </div>
-        </div>
-        <DebugCategoryBox
-          show={geoExplainDebugMode}
-          heading="[debug] 잘된 점 기준 · 카테고리"
-          lines={buildStrengthCategoryDebugLines(result)}
-        />
-
-        {strengthRows.length === 0 ? (
-          <div style={{ fontSize: 13, color: "#7a8da3", padding: "8px 4px" }}>
-            No strong GEO signals were detected yet.
-          </div>
-        ) : (
-          <>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {(strengthRows.slice(0, passedOpen ? strengthRows.length : Math.min(5, strengthRows.length))).map((row) => {
-                const legacyPc = passedChecks.find((p) => p.id === row.id);
-                const isExpanded = expandedPassedId === row.id;
-                return (
-                  <button
-                    key={row.id}
-                    onClick={() => {
-                      setExpandedPassedId(isExpanded ? null : row.id);
-                      if (legacyPc?.position && onPassedCheckClick) onPassedCheckClick(legacyPc);
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 8,
-                      padding: "8px 10px",
-                      borderRadius: 8,
-                      border: `1px solid ${isExpanded ? "rgba(52,211,153,0.4)" : "rgba(52,211,153,0.06)"}`,
-                      background: isExpanded ? "rgba(52,211,153,0.04)" : "transparent",
-                      cursor: "pointer",
-                      textAlign: "left",
-                      transition: "all 0.15s",
-                      width: "100%",
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: 22,
-                        height: 22,
-                        borderRadius: "50%",
-                        background: "rgba(52,211,153,0.18)",
-                        color: "#10b981",
-                        fontSize: 12,
-                        fontWeight: 800,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                        marginTop: 1,
-                      }}
-                    >
-                      <Check size={12} strokeWidth={3} style={{ color: "inherit" }} />
-                    </span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: isExpanded ? 6 : 0 }}>
-                        <span style={{ fontSize: 14, fontWeight: 600, color: "#c4d0e0", lineHeight: 1.3 }}>{row.label}</span>
-                        {isExpanded ? <ChevronUp size={14} style={{ color: "#34d399", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />}
-                      </div>
-                      {isExpanded && (
-                        <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.6, borderTop: "1px dashed rgba(52,211,153,0.12)", paddingTop: 6, marginTop: 4 }}>
-                          {row.description && row.description !== row.label && (
-                            <div style={{ marginBottom: row.reason ? 8 : 0, color: "#a8b8cc" }}>{row.description}</div>
-                          )}
-                          {row.reason}
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {strengthRows.length > 5 && (
-              <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
-                <button
-                  type="button"
-                  onClick={() => setPassedOpen((v) => !v)}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: 8,
-                    border: "1px solid #1e2d45",
-                    background: "transparent",
-                    color: "#00d4c8",
-                    fontSize: 12,
-                    cursor: "pointer",
-                    fontFamily: "var(--font-mono)",
-                  }}
-                >
-                  {passedOpen ? "View Less" : `View More (${strengthRows.length - 5})`}
-                </button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* 3. 발견된 이슈 */}
+      {/* 2. 발견된 이슈 */}
       <div style={CARD_STYLE}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
           <GeoIssuesAlertIcon />
@@ -1725,115 +1617,334 @@ export default function AuditPanel({
         </div>
       </div>
 
-      {/* 플랫폼 제약 (네이버 블로그 등): 기술 SEO는 작성자가 직접 수정 불가 */}
-      {platformConstraints && platformConstraints.length > 0 && (
-        <div style={{ ...CARD_STYLE, marginBottom: 10 }}>
-          <div
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#a78bfa",
-              fontFamily: "var(--font-mono)",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              marginBottom: 10,
-            }}
-          >
-            플랫폼 제약
-          </div>
-          <p style={{ fontSize: 11, color: "#7a8da3", lineHeight: 1.5, marginBottom: 10 }}>
-            아래 항목은 호스팅 환경상 직접 수정이 어렵습니다. 감점이 아니라 &quot;조치 불가&quot;에 가깝게 이해하세요.
-          </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {platformConstraints.map((c) => (
-              <div
-                key={c.id}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  border: "1px solid rgba(167,139,250,0.25)",
-                  background: "rgba(167,139,250,0.06)",
-                }}
-              >
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#ddd6fe", marginBottom: 4 }}>{c.label}</div>
-                <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55, marginBottom: 6 }}>{c.description}</div>
-                <div style={{ fontSize: 12, color: "#5eead4", lineHeight: 1.5 }}>
-                  <span style={{ fontWeight: 600, color: "#7dd3fc" }}>대안 · </span>
-                  {c.alternative}
-                </div>
-              </div>
-            ))}
+      {/* 3. 질문 커버리지 — optional hide (geoUiFlags) */}
+      <div style={CARD_STYLE}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <Search size={18} style={{ color: "#00d4c8" }} />
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
+            {GEO_REPORT_LABELS_KO.questionCoverageSlideTitle}
+          </span>
+        </div>
+        {(() => {
+          const qs = result.questionSourceStatus;
+          const externalQuestionDataUnreliable =
+            qs === "fallback_only" || qs === "tavily_failed";
+          return externalQuestionDataUnreliable ? (
+            <div
+              style={{
+                marginBottom: 10,
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: "1px solid rgba(240,92,122,0.35)",
+                background: "rgba(240,92,122,0.06)",
+                fontSize: 12,
+                color: "#e8b4bf",
+                lineHeight: 1.45,
+              }}
+            >
+              외부 질문 데이터를 불러오지 못했습니다
+            </div>
+          ) : null;
+        })()}
+        <div style={{ maxHeight: 340, overflowY: "auto", marginBottom: 8 }}>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8 }}>
+            {(() => {
+              const qs = result.questionSourceStatus;
+              const hideUserSourceLabels = qs === "fallback_only" || qs === "tavily_failed";
+              const showFallbackExamplesHeading = qs === "fallback_only" && (result.searchQuestions?.length ?? 0) > 0;
+
+              const covered = result.searchQuestionCovered ?? result.searchQuestions?.map(() => false) ?? [];
+              const uncoveredTop3Set = new Set(
+                (result.recommendations?.predictedUncoveredTop3 ?? []).map((q) => q.question)
+              );
+
+              const userItems = (result.searchQuestions ?? []).map((q, i) => ({
+                type: "user" as const,
+                text: q.text,
+                isCovered: covered[i] ?? false,
+                source: q.source,
+                refUrl: q.url,
+                domain: q.source === "community" ? getDomainFromUrl(q.url) : null,
+                key: `u-${i}`,
+              }));
+
+              const aiItems = (result.recommendations?.predictedQuestions ?? []).map((q, i) => ({
+                type: "ai" as const,
+                text: q.question,
+                isCovered: q.coveredByPage ?? false,
+                isUncoveredTop3: uncoveredTop3Set.has(q.question),
+                importanceReason: q.importanceReason,
+                key: `a-${i}`,
+              }));
+
+              const all = [...userItems, ...aiItems].sort((a, b) => {
+                const aTop = "isUncoveredTop3" in a && a.isUncoveredTop3 ? 1 : 0;
+                const bTop = "isUncoveredTop3" in b && b.isUncoveredTop3 ? 1 : 0;
+                return bTop - aTop;
+              });
+              const visibleCount = questionsExpanded ? all.length : Math.min(INITIAL_QUESTIONS, all.length);
+              const visible = all.slice(0, visibleCount);
+
+              if (all.length === 0) {
+                return (
+                  <li style={{ padding: "12px 10px", fontSize: 12, color: "#7a8da3", fontStyle: "italic" }}>
+                    {qs === "tavily_failed" || qs === "fallback_only"
+                      ? "표시할 질문이 없습니다"
+                      : "수집된 질문 없음"}
+                  </li>
+                );
+              }
+
+              return (
+                <>
+                  {showFallbackExamplesHeading && (
+                    <li style={{ listStyle: "none", padding: "4px 2px 0", fontSize: 11, color: "#7a8da3" }}>
+                      관련 질문 예시
+                    </li>
+                  )}
+                  {visible.map((item) => {
+                    const isUncovered = item.type === "user" ? !item.isCovered : !item.isCovered;
+
+                    return (
+                      <li key={item.key}>
+                        <button
+                          type="button"
+                          onClick={() => item.isCovered && onQuestionClick?.(item.text)}
+                          style={{
+                            width: "100%",
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 8,
+                            padding: "8px 10px",
+                            borderRadius: 8,
+                            border: "1px solid #1e2d45",
+                            background: "transparent",
+                            cursor: item.isCovered && onQuestionClick ? "pointer" : "default",
+                            textAlign: "left",
+                            transition: "all 0.15s",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (item.isCovered && onQuestionClick)
+                              e.currentTarget.style.background = "rgba(0,212,200,0.06)";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = "transparent";
+                          }}
+                        >
+                          {isUncovered ? (
+                            <X size={16} style={{ flexShrink: 0, marginTop: 2, color: "#f05c7a" }} />
+                          ) : (
+                            <Circle size={16} style={{ flexShrink: 0, marginTop: 2, color: "#34d399" }} />
+                          )}
+                          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                            <span style={{ fontSize: 12, color: "#c4d0e0", lineHeight: 1.5 }}>
+                              {item.text}
+                            </span>
+                            {item.type === "user" && !hideUserSourceLabels && (
+                              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 2 }}>
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    padding: "1px 6px",
+                                    borderRadius: 4,
+                                    background: "rgba(0,212,200,0.1)",
+                                    color: "#5eead4",
+                                    fontFamily: "var(--font-mono)",
+                                  }}
+                                >
+                                  {SEARCH_SOURCE_LABEL[item.source] ?? item.source}
+                                </span>
+                                {"refUrl" in item && item.refUrl && (
+                                  <a
+                                    href={item.refUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{
+                                      fontSize: 10,
+                                      color: "#00d4c8",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 4,
+                                      textDecoration: "none",
+                                      maxWidth: "100%",
+                                    }}
+                                  >
+                                    <ExternalLink size={10} style={{ flexShrink: 0 }} />
+                                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {item.refUrl.replace(/^https?:\/\//, "").slice(0, 56)}
+                                      {item.refUrl.length > 56 ? "…" : ""}
+                                    </span>
+                                  </a>
+                                )}
+                                {"domain" in item && item.domain && (
+                                  <span style={{ fontSize: 10, color: "#6d8099" }}>{item.domain}</span>
+                                )}
+                              </div>
+                            )}
+                            {item.type === "ai" && item.importanceReason && (
+                              <div style={{ fontSize: 11, color: "#7a8da3" }}>{item.importanceReason}</div>
+                            )}
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </>
+              );
+            })()}
+          </ul>
+        </div>
+        {((result.searchQuestions?.length ?? 0) + (result.recommendations?.predictedQuestions?.length ?? 0)) > INITIAL_QUESTIONS && (
+          !questionsExpanded ? (
+            <button
+              type="button"
+              onClick={() => setQuestionsExpanded(true)}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px dashed #1e2d45",
+                background: "transparent",
+                color: "#00d4c8",
+                fontSize: 12,
+                cursor: "pointer",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              View More ({(result.searchQuestions?.length ?? 0) + (result.recommendations?.predictedQuestions?.length ?? 0) - INITIAL_QUESTIONS})
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setQuestionsExpanded(false)}
+              style={{
+                width: "100%",
+                padding: "6px 12px",
+                borderRadius: 8,
+                border: "none",
+                background: "transparent",
+                color: "#7a8da3",
+                fontSize: 11,
+                cursor: "pointer",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              접기
+            </button>
+          )
+        )}
+      </div>
+
+      {/* 4. 잘된 점 / Strengths */}
+      <div style={CARD_STYLE}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <GeoStrengthTrophyIcon />
+            <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
+              잘된 점 {strengthRows.length > 0 ? `(${strengthRows.length})` : ""}
+            </span>
           </div>
         </div>
-      )}
+        <DebugCategoryBox
+          show={geoExplainDebugMode}
+          heading="[debug] 잘된 점 기준 · 카테고리"
+          lines={buildStrengthCategoryDebugLines(result)}
+        />
 
-      {/* 5. 개선 기회 — 숨김 when rule-based recommendations exist (actions live in Priority Actions only). */}
-      {opportunities.length > 0 && !result.recommendations && (
-        <div style={CARD_STYLE}>
-          <button
-            type="button"
-            onClick={() => setOpportunitiesOpen((v) => !v)}
-            style={{
-              width: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              background: "transparent",
-              border: "none",
-              padding: 0,
-              cursor: "pointer",
-              marginBottom: opportunitiesOpen ? 10 : 0,
-            }}
-          >
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-              개선 기회 ({opportunities.length})
-            </span>
-            {opportunitiesOpen ? <ChevronUp size={16} color="#7a8da3" /> : <ChevronDown size={16} color="#7a8da3" />}
-          </button>
-          {opportunitiesOpen && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {opportunities.map((opp) => {
-                const imp = PRIORITY_COLORS[opp.impact];
+        {strengthRows.length === 0 ? (
+          <div style={{ fontSize: 13, color: "#7a8da3", padding: "8px 4px" }}>
+            No strong GEO signals were detected yet.
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {(strengthRows.slice(0, passedOpen ? strengthRows.length : Math.min(5, strengthRows.length))).map((row) => {
+                const legacyPc = passedChecks.find((p) => p.id === row.id);
+                const isExpanded = expandedPassedId === row.id;
                 return (
-                  <div
-                    key={opp.id}
+                  <button
+                    key={row.id}
+                    onClick={() => {
+                      setExpandedPassedId(isExpanded ? null : row.id);
+                      if (legacyPc?.position && onPassedCheckClick) onPassedCheckClick(legacyPc);
+                    }}
                     style={{
-                      padding: "10px 12px",
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      padding: "8px 10px",
                       borderRadius: 8,
-                      border: `1px solid ${imp.border}`,
-                      background: "rgba(0,212,200,0.04)",
+                      border: `1px solid ${isExpanded ? "rgba(52,211,153,0.4)" : "rgba(52,211,153,0.06)"}`,
+                      background: isExpanded ? "rgba(52,211,153,0.04)" : "transparent",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      transition: "all 0.15s",
+                      width: "100%",
                     }}
                   >
-                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: "#e8edf5" }}>{opp.title}</span>
-                      <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: imp.bg, color: imp.color, fontFamily: "var(--font-mono)" }}>
-                        {IMPACT_LABEL[opp.impact] ?? opp.impact}
-                      </span>
-                      <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(91,110,245,0.12)", color: "#a5b4fc", fontFamily: "var(--font-mono)" }}>
-                        {focusByAxis[opp.improvesAxis] ?? GEO_AXIS_LABEL[opp.improvesAxis] ?? opp.improvesAxis}
-                      </span>
-                      {opp.fixesIssueId && (
-                        <span style={{ fontSize: 10, color: "#7a8da3", fontFamily: "var(--font-mono)" }}>↳ 이슈 {opp.fixesIssueId}</span>
+                    <span
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: "50%",
+                        background: "rgba(52,211,153,0.18)",
+                        color: "#10b981",
+                        fontSize: 12,
+                        fontWeight: 800,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        marginTop: 1,
+                      }}
+                    >
+                      <Check size={12} strokeWidth={3} style={{ color: "inherit" }} />
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: isExpanded ? 6 : 0 }}>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: "#c4d0e0", lineHeight: 1.3 }}>{row.label}</span>
+                        {isExpanded ? <ChevronUp size={14} style={{ color: "#34d399", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "#7a8da3", flexShrink: 0 }} />}
+                      </div>
+                      {isExpanded && (
+                        <div style={{ fontSize: 12, color: "#8b9cb3", lineHeight: 1.6, borderTop: "1px dashed rgba(52,211,153,0.12)", paddingTop: 6, marginTop: 4 }}>
+                          {row.description && row.description !== row.label && (
+                            <div style={{ marginBottom: row.reason ? 8 : 0, color: "#a8b8cc" }}>{row.description}</div>
+                          )}
+                          {row.reason}
+                        </div>
                       )}
                     </div>
-                    <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55 }}>{opp.rationale}</div>
-                    {geoExplainDebugMode && (
-                      <>
-                        <div style={{ fontSize: 11, color: "#6d8099", fontFamily: "var(--font-mono)", fontWeight: 600, marginTop: 8 }}>Opportunity (debug JSON)</div>
-                        <pre style={{ margin: "4px 0 0", fontSize: 10, color: "#6d8099", fontFamily: "var(--font-mono)", overflow: "auto", maxHeight: 240 }}>
-                          {JSON.stringify(opp, null, 2)}
-                        </pre>
-                      </>
-                    )}
-                  </div>
+                  </button>
                 );
               })}
             </div>
-          )}
-        </div>
-      )}
 
-      {/* 4. 콘텐츠 개선 가이드 (요약 → 갭 → 우선 작업 → 소제목 → 블록 → 작성 예시) */}
+            {strengthRows.length > 5 && (
+              <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => setPassedOpen((v) => !v)}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 8,
+                    border: "1px solid #1e2d45",
+                    background: "transparent",
+                    color: "#00d4c8",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  {passedOpen ? "View Less" : `View More (${strengthRows.length - 5})`}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* 5. 콘텐츠 개선 가이드 (요약 → 갭 → 우선 작업 → 소제목 → 블록 → 작성 예시) */}
       {result.recommendations && (() => {
         const rec = result.recommendations;
         const improvementSummaryLabel =
@@ -1903,7 +2014,7 @@ export default function AuditPanel({
               <div style={{ fontWeight: 600, color: "#f5a623", fontSize: 11, marginBottom: 8, letterSpacing: "0.04em", textTransform: "uppercase" }}>
                 {sec.priorityActions}
               </div>
-              <ol
+              <ul
                 style={{
                   margin: 0,
                   paddingLeft: 20,
@@ -1911,6 +2022,7 @@ export default function AuditPanel({
                   fontSize: 12,
                   fontWeight: 500,
                   lineHeight: 1.55,
+                  listStyle: "circle",
                 }}
               >
                 {rec.actionPlan.priorityNotes.map((note, i) => (
@@ -1918,7 +2030,7 @@ export default function AuditPanel({
                     {note}
                   </li>
                 ))}
-              </ol>
+              </ul>
             </div>
           )}
           {rec.actionPlan.suggestedHeadings.length > 0 && (
@@ -2085,6 +2197,114 @@ export default function AuditPanel({
         );
       })()}
 
+      {/* 플랫폼 제약 (네이버 블로그 등): 기술 SEO는 작성자가 직접 수정 불가 */}
+      {platformConstraints && platformConstraints.length > 0 && (
+        <div style={{ ...CARD_STYLE, marginBottom: 10 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#a78bfa",
+              fontFamily: "var(--font-mono)",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              marginBottom: 10,
+            }}
+          >
+            플랫폼 제약
+          </div>
+          <p style={{ fontSize: 11, color: "#7a8da3", lineHeight: 1.5, marginBottom: 10 }}>
+            아래 항목은 호스팅 환경상 직접 수정이 어렵습니다. 감점이 아니라 &quot;조치 불가&quot;에 가깝게 이해하세요.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {platformConstraints.map((c) => (
+              <div
+                key={c.id}
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: "1px solid rgba(167,139,250,0.25)",
+                  background: "rgba(167,139,250,0.06)",
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#ddd6fe", marginBottom: 4 }}>{c.label}</div>
+                <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55, marginBottom: 6 }}>{c.description}</div>
+                <div style={{ fontSize: 12, color: "#5eead4", lineHeight: 1.5 }}>
+                  <span style={{ fontWeight: 600, color: "#7dd3fc" }}>대안 · </span>
+                  {c.alternative}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 개선 기회 — 숨김 when rule-based recommendations exist (actions live in Priority Actions only). */}
+      {opportunities.length > 0 && !result.recommendations && (
+        <div style={CARD_STYLE}>
+          <button
+            type="button"
+            onClick={() => setOpportunitiesOpen((v) => !v)}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              cursor: "pointer",
+              marginBottom: opportunitiesOpen ? 10 : 0,
+            }}
+          >
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#00d4c8", fontFamily: "var(--font-mono)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              개선 기회 ({opportunities.length})
+            </span>
+            {opportunitiesOpen ? <ChevronUp size={16} color="#7a8da3" /> : <ChevronDown size={16} color="#7a8da3" />}
+          </button>
+          {opportunitiesOpen && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {opportunities.map((opp) => {
+                const imp = PRIORITY_COLORS[opp.impact];
+                return (
+                  <div
+                    key={opp.id}
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: 8,
+                      border: `1px solid ${imp.border}`,
+                      background: "rgba(0,212,200,0.04)",
+                    }}
+                  >
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "#e8edf5" }}>{opp.title}</span>
+                      <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: imp.bg, color: imp.color, fontFamily: "var(--font-mono)" }}>
+                        {IMPACT_LABEL[opp.impact] ?? opp.impact}
+                      </span>
+                      <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(91,110,245,0.12)", color: "#a5b4fc", fontFamily: "var(--font-mono)" }}>
+                        {focusByAxis[opp.improvesAxis] ?? GEO_AXIS_LABEL[opp.improvesAxis] ?? opp.improvesAxis}
+                      </span>
+                      {opp.fixesIssueId && (
+                        <span style={{ fontSize: 10, color: "#7a8da3", fontFamily: "var(--font-mono)" }}>↳ 이슈 {opp.fixesIssueId}</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#a8b8cc", lineHeight: 1.55 }}>{opp.rationale}</div>
+                    {geoExplainDebugMode && (
+                      <>
+                        <div style={{ fontSize: 11, color: "#6d8099", fontFamily: "var(--font-mono)", fontWeight: 600, marginTop: 8 }}>Opportunity (debug JSON)</div>
+                        <pre style={{ margin: "4px 0 0", fontSize: 10, color: "#6d8099", fontFamily: "var(--font-mono)", overflow: "auto", maxHeight: 240 }}>
+                          {JSON.stringify(opp, null, 2)}
+                        </pre>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 황금 문단 */}
       {goldenParagraphs.length > 0 && (
         <div style={CARD_STYLE}>
@@ -2122,225 +2342,6 @@ export default function AuditPanel({
           )}
         </div>
       )}
-
-      {/* 5. 질문 커버리지 — optional hide (geoUiFlags) */}
-      <div style={CARD_STYLE}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-            <Search size={18} style={{ color: "#00d4c8" }} />
-            <span style={{ fontSize: 14, fontWeight: 700, color: "#e8edf5", fontFamily: "var(--font-body)" }}>
-              {GEO_REPORT_LABELS_KO.questionCoverageSlideTitle}
-            </span>
-          </div>
-          {(() => {
-            const qs = result.questionSourceStatus;
-            const externalQuestionDataUnreliable =
-              qs === "fallback_only" || qs === "tavily_failed";
-            return externalQuestionDataUnreliable ? (
-              <div
-                style={{
-                  marginBottom: 10,
-                  padding: "8px 10px",
-                  borderRadius: 8,
-                  border: "1px solid rgba(240,92,122,0.35)",
-                  background: "rgba(240,92,122,0.06)",
-                  fontSize: 12,
-                  color: "#e8b4bf",
-                  lineHeight: 1.45,
-                }}
-              >
-                외부 질문 데이터를 불러오지 못했습니다
-              </div>
-            ) : null;
-          })()}
-          <div style={{ maxHeight: 340, overflowY: "auto", marginBottom: 8 }}>
-            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 8 }}>
-              {(() => {
-                const qs = result.questionSourceStatus;
-                const hideUserSourceLabels = qs === "fallback_only" || qs === "tavily_failed";
-                const showFallbackExamplesHeading = qs === "fallback_only" && (result.searchQuestions?.length ?? 0) > 0;
-
-                const covered = result.searchQuestionCovered ?? result.searchQuestions?.map(() => false) ?? [];
-                const uncoveredTop3Set = new Set(
-                  (result.recommendations?.predictedUncoveredTop3 ?? []).map((q) => q.question)
-                );
-
-                const userItems = (result.searchQuestions ?? []).map((q, i) => ({
-                  type: "user" as const,
-                  text: q.text,
-                  isCovered: covered[i] ?? false,
-                  source: q.source,
-                  refUrl: q.url,
-                  domain: q.source === "community" ? getDomainFromUrl(q.url) : null,
-                  key: `u-${i}`,
-                }));
-
-                const aiItems = (result.recommendations?.predictedQuestions ?? []).map((q, i) => ({
-                  type: "ai" as const,
-                  text: q.question,
-                  isCovered: q.coveredByPage ?? false,
-                  isUncoveredTop3: uncoveredTop3Set.has(q.question),
-                  importanceReason: q.importanceReason,
-                  key: `a-${i}`,
-                }));
-
-                const all = [...userItems, ...aiItems].sort((a, b) => {
-                  const aTop = "isUncoveredTop3" in a && a.isUncoveredTop3 ? 1 : 0;
-                  const bTop = "isUncoveredTop3" in b && b.isUncoveredTop3 ? 1 : 0;
-                  return bTop - aTop;
-                });
-                const visibleCount = questionsExpanded ? all.length : Math.min(INITIAL_QUESTIONS, all.length);
-                const visible = all.slice(0, visibleCount);
-
-                if (all.length === 0) {
-                  return (
-                    <li style={{ padding: "12px 10px", fontSize: 12, color: "#7a8da3", fontStyle: "italic" }}>
-                      {qs === "tavily_failed" || qs === "fallback_only"
-                        ? "표시할 질문이 없습니다"
-                        : "수집된 질문 없음"}
-                    </li>
-                  );
-                }
-
-                return (
-                  <>
-                    {showFallbackExamplesHeading && (
-                      <li style={{ listStyle: "none", padding: "4px 2px 0", fontSize: 11, color: "#7a8da3" }}>
-                        관련 질문 예시
-                      </li>
-                    )}
-                    {visible.map((item) => {
-                  const isUncovered = item.type === "user" ? !item.isCovered : !item.isCovered;
-
-                  return (
-                    <li key={item.key}>
-                      <button
-                        type="button"
-                        onClick={() => item.isCovered && onQuestionClick?.(item.text)}
-                        style={{
-                          width: "100%",
-                          display: "flex",
-                          alignItems: "flex-start",
-                          gap: 8,
-                          padding: "8px 10px",
-                          borderRadius: 8,
-                          border: "1px solid #1e2d45",
-                          background: "transparent",
-                          cursor: item.isCovered && onQuestionClick ? "pointer" : "default",
-                          textAlign: "left",
-                          transition: "all 0.15s",
-                        }}
-                        onMouseEnter={(e) => {
-                          if (item.isCovered && onQuestionClick)
-                            e.currentTarget.style.background = "rgba(0,212,200,0.06)";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = "transparent";
-                        }}
-                      >
-                        {isUncovered ? (
-                          <X size={16} style={{ flexShrink: 0, marginTop: 2, color: "#f05c7a" }} />
-                        ) : (
-                          <Circle size={16} style={{ flexShrink: 0, marginTop: 2, color: "#34d399" }} />
-                        )}
-                        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-                          <span style={{ fontSize: 12, color: "#c4d0e0", lineHeight: 1.5 }}>
-                            {item.text}
-                          </span>
-                          {item.type === "user" && !hideUserSourceLabels && (
-                            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 2 }}>
-                              <span
-                                style={{
-                                  fontSize: 10,
-                                  padding: "1px 6px",
-                                  borderRadius: 4,
-                                  background: "rgba(0,212,200,0.1)",
-                                  color: "#5eead4",
-                                  fontFamily: "var(--font-mono)",
-                                }}
-                              >
-                                {SEARCH_SOURCE_LABEL[item.source] ?? item.source}
-                              </span>
-                              {"refUrl" in item && item.refUrl && (
-                                <a
-                                  href={item.refUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={(e) => e.stopPropagation()}
-                                  style={{
-                                    fontSize: 10,
-                                    color: "#00d4c8",
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: 4,
-                                    textDecoration: "none",
-                                    maxWidth: "100%",
-                                  }}
-                                >
-                                  <ExternalLink size={10} style={{ flexShrink: 0 }} />
-                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {item.refUrl.replace(/^https?:\/\//, "").slice(0, 56)}
-                                    {item.refUrl.length > 56 ? "…" : ""}
-                                  </span>
-                                </a>
-                              )}
-                              {"domain" in item && item.domain && (
-                                <span style={{ fontSize: 10, color: "#6d8099" }}>{item.domain}</span>
-                              )}
-                            </div>
-                          )}
-                          {item.type === "ai" && item.importanceReason && (
-                            <div style={{ fontSize: 11, color: "#7a8da3" }}>{item.importanceReason}</div>
-                          )}
-                        </div>
-                      </button>
-                    </li>
-                  );
-                })}
-                  </>
-                );
-              })()}
-            </ul>
-          </div>
-          {((result.searchQuestions?.length ?? 0) + (result.recommendations?.predictedQuestions?.length ?? 0)) > INITIAL_QUESTIONS && (
-            !questionsExpanded ? (
-              <button
-                type="button"
-                onClick={() => setQuestionsExpanded(true)}
-                style={{
-                  width: "100%",
-                  padding: "8px 12px",
-                  borderRadius: 8,
-                  border: "1px dashed #1e2d45",
-                  background: "transparent",
-                  color: "#00d4c8",
-                  fontSize: 12,
-                  cursor: "pointer",
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                View More ({(result.searchQuestions?.length ?? 0) + (result.recommendations?.predictedQuestions?.length ?? 0) - INITIAL_QUESTIONS})
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setQuestionsExpanded(false)}
-                style={{
-                  width: "100%",
-                  padding: "6px 12px",
-                  borderRadius: 8,
-                  border: "none",
-                  background: "transparent",
-                  color: "#7a8da3",
-                  fontSize: 11,
-                  cursor: "pointer",
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                접기
-              </button>
-            )
-          )}
-      </div>
       </div>
 
       {/* PPT 버튼 - 하단 고정 — optional hide (geoUiFlags) */}

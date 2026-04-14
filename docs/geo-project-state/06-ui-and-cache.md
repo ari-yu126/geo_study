@@ -6,8 +6,12 @@
 3. Loading state displayed while pipeline runs  
 4. Response received (`AnalysisResult`)  
 5. UI renders:
-   - left panel: scores, issues, recommendations  
-   - right panel: iframe preview with markers  
+   - **Left panel (AuditPanel):** headline GEO score and per-axis-style breakdown first; then the main analysis blocks in this order: **discovered issues → question coverage → strengths (“what already works”) → content improvement guide** (deterministic recommendations from the recommendation engine; optional AI writing examples only when the user triggers them). Other blocks (e.g. platform constraints, improvement opportunities when no rule-based guide exists, golden paragraphs) may appear after those.  
+   - **Right panel:** iframe preview with markers  
+
+**Why this order:** the panel is organized as **problem → evidence → balance → resolution**—surfacing gaps and question fit before strengths, then actionable guidance—so improvement priorities are easier to follow than a strengths-first layout.
+
+**Final score:** the displayed headline score may apply a **small capped post-blend adjustment** from discovered issue severities (see `preIssuePenaltyFinalScore` / `issuePenaltyPoints` on `scores` in API payloads) so the number stays consistent with the issue list; axis scores and blend math in the engine are unchanged.
 
 ## Cache Strategy
 Before running analysis:

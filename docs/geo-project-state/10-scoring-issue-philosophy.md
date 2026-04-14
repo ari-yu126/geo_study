@@ -136,7 +136,7 @@ These four concepts form a **chain of explanation** from raw signals to user-fac
 **Recommendations**
 
 - **Narrative strategy** — human-readable guidance: suggested headings, blocks, tone, sequencing.  
-- **Built on top of** opportunities, axis analysis, and page context; often LLM-generated with template fallback.  
+- **Built on top of** opportunities, axis analysis, and page context using **deterministic** rules, locale templates, and optional monthly **`guideRules`** (no LLM in `generateGeoRecommendations`).  
 - **Explain how to do it** — turning opportunities into a **coherent plan** the user can follow.
 
 ### Relationship diagram

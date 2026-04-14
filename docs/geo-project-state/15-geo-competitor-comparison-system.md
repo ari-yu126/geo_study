@@ -94,7 +94,7 @@ Per URL: URL → Extraction → Axis scores → Blend → finalScore → Explain
 Comparison layer:  multiple such results → align metrics → deltas, rankings, contrast views → comparison report
 ```
 
-- **Scoring and explain layers** remain the **source of truth** per URL (`13-system-invariants.md`).
+- **Scoring and explain layers** remain the **source of truth** per URL (`11-system-philosophy-and-architecture-rules.md` §9).
 - **Comparison** is a **meta-layer**: it aggregates and contrasts **already computed** `AnalysisResult`-style outputs.
 - **Monthly GEO config** still governs how each URL is scored; comparison only **aggregates** outcomes.
 
