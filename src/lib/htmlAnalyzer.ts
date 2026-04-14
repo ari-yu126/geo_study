@@ -57,12 +57,6 @@ export async function fetchHtml(url: string, appOrigin?: string): Promise<string
   const fetchUrl = appOrigin
     ? `${appOrigin}/api/proxy?url=${encodeURIComponent(url)}`
     : url;
-  /** `direct` = same-origin/upstream fetch; `proxy` = app /api/proxy (iframe parity). */
-  const userAgentType = appOrigin ? 'proxy' : 'direct';
-
-  console.log('[fetch] trying url:', url);
-  if (fetchUrl !== url) console.log('[fetch] requestUrl:', fetchUrl);
-  console.log('[fetch] userAgent:', userAgentType);
 
   let response: Response;
   try {
@@ -84,10 +78,6 @@ export async function fetchHtml(url: string, appOrigin?: string): Promise<string
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`Fetch failed (network): ${detail}`);
   }
-
-  console.log('[fetch] status:', response.status);
-  console.log('[fetch] finalUrl:', response.url);
-  console.log('[fetch] contentType:', response.headers.get('content-type'));
 
   if (!response.ok) {
     let extra = '';

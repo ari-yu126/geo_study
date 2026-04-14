@@ -690,12 +690,6 @@ export async function deriveAuditIssues(
       ? issues.filter((i) => ytAllowResolved.ids.includes(i.id) || i.id.startsWith('axis_weak'))
       : issues;
 
-  console.log(
-    `[deriveAuditIssues] geoIssueSource=${geoIssueSource} geoPassedSource=${geoPassedSource} rulesSource=${rulesSourceLabel} youtubeAllowedIssueIdsSource=${ytAllowResolved.source} issueRulesCount=${issueRulesToUseLen} allowedIssueIdsCount=${skipTextOnlyRules ? ytAllowResolved.ids.length : 0} derivedIssuesCount=${finalIssues.length} skipYouTubeWhitelist=${skipTextOnlyRules} url=${result.url}`
-  );
-  
-  console.log('[DEBUG] finalIssueIds:', finalIssues.map((i) => i.id));
-
   for (const issue of finalIssues) {
     const pos = assignPosition(issue.targetSelector, issue.targetIndex);
     if (pos) {

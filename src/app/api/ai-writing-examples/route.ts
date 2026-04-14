@@ -34,6 +34,7 @@ function logAiWritingExamplesCache(payload: {
   url: string;
   pageType: string;
 }): void {
+  if (process.env.AI_WRITING_API_LOG !== '1') return;
   console.log('[CACHE] ai-writing-examples', JSON.stringify(payload));
 }
 
@@ -174,12 +175,14 @@ export async function POST(req: Request) {
       notice: AI_WRITING_QUOTA_NOTICE[loc],
     };
     setCachedAiWritingExamples(body.url, body.pageType, loc, guideSig, payload);
-    console.log('[AI WRITING API RESULT]', {
-      ...payload,
-      keySource,
-      fallback: 'quota_template',
-      note: 'Gemini may have been called once before quota/template fallback',
-    });
+    if (process.env.AI_WRITING_API_LOG === '1') {
+      console.log('[AI WRITING API RESULT]', {
+        ...payload,
+        keySource,
+        fallback: 'quota_template',
+        note: 'Gemini may have been called once before quota/template fallback',
+      });
+    }
     return NextResponse.json(payload);
   }
 
@@ -191,7 +194,9 @@ export async function POST(req: Request) {
       keySource,
       reason: gen.reason,
     };
-    console.log('[AI WRITING API RESULT]', payload);
+    if (process.env.AI_WRITING_API_LOG === '1') {
+      console.log('[AI WRITING API RESULT]', payload);
+    }
     return NextResponse.json(payload);
   }
 
@@ -201,17 +206,19 @@ export async function POST(req: Request) {
     ...(gen.guideRulePromptDebug ? { guideRulePromptDebug: gen.guideRulePromptDebug } : {}),
   };
   setCachedAiWritingExamples(body.url, body.pageType, loc, guideSig, payload);
-  console.log('[AI WRITING API RESULT]', {
-    aiAvailable: true,
-    keySource,
-    geminiCalled: true,
-    data: {
-      summaryExampleLen: gen.data.summaryExample.length,
-      faqCount: gen.data.faqExamples.length,
-      prosConsLen: gen.data.prosConsExample.length,
-      verdictLen: gen.data.verdictExample.length,
-      headingsCount: gen.data.headingSuggestions.filter(Boolean).length,
-    },
-  });
+  if (process.env.AI_WRITING_API_LOG === '1') {
+    console.log('[AI WRITING API RESULT]', {
+      aiAvailable: true,
+      keySource,
+      geminiCalled: true,
+      data: {
+        summaryExampleLen: gen.data.summaryExample.length,
+        faqCount: gen.data.faqExamples.length,
+        prosConsLen: gen.data.prosConsExample.length,
+        verdictLen: gen.data.verdictExample.length,
+        headingsCount: gen.data.headingSuggestions.filter(Boolean).length,
+      },
+    });
+  }
   return NextResponse.json(payload);
 }

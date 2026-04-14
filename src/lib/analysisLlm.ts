@@ -32,6 +32,7 @@ export function analysisLlmIsConfigured(): boolean {
 }
 
 function logAnalysisLlmTrace(moduleName: string, provider: AnalysisLlmProvider) {
+  if (process.env.GEMINI_TRACE !== '1') return;
   const ctx = getGeminiTraceContext();
   const inRunAnalysis = !!ctx;
   console.log(

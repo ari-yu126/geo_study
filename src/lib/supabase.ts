@@ -27,18 +27,23 @@ export async function isSupabaseReachable(): Promise<boolean> {
 
   const supabaseUrlPresent = Boolean(supabaseUrl);
   const anonKeyPresent = Boolean(supabaseAnonKey);
-  console.log('[SUPABASE REACHABILITY]', {
-    supabaseUrlPresent,
-    anonKeyPresent,
-    usesServiceRoleForReachability: false,
-    checkDescription: 'raw fetch to PostgREST root /rest/v1/ (HEAD then optional GET); not supabase-js table read',
-  });
+  const dbg = process.env.GEO_SUPABASE_DEBUG === '1';
+  if (dbg) {
+    console.log('[SUPABASE REACHABILITY]', {
+      supabaseUrlPresent,
+      anonKeyPresent,
+      usesServiceRoleForReachability: false,
+      checkDescription: 'raw fetch to PostgREST root /rest/v1/ (HEAD then optional GET); not supabase-js table read',
+    });
+  }
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    console.log('[SUPABASE REACHABILITY]', {
-      outcome: 'unreachable',
-      reason: 'missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY',
-    });
+    if (dbg) {
+      console.log('[SUPABASE REACHABILITY]', {
+        outcome: 'unreachable',
+        reason: 'missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY',
+      });
+    }
     return false;
   }
 
@@ -65,22 +70,26 @@ export async function isSupabaseReachable(): Promise<boolean> {
   try {
     let res = await runCheck('HEAD');
     const headAccepted = res.ok || res.status === 400;
-    console.log('[SUPABASE REACHABILITY]', {
-      step: 'HEAD',
-      requestUrl: restRoot,
-      status: res.status,
-      acceptedAsReachable: headAccepted,
-    });
+    if (dbg) {
+      console.log('[SUPABASE REACHABILITY]', {
+        step: 'HEAD',
+        requestUrl: restRoot,
+        status: res.status,
+        acceptedAsReachable: headAccepted,
+      });
+    }
 
     if (!headAccepted) {
       res = await runCheck('GET');
       const getAccepted = res.ok || res.status === 400;
-      console.log('[SUPABASE REACHABILITY]', {
-        step: 'GET_fallback',
-        requestUrl: restRoot,
-        status: res.status,
-        acceptedAsReachable: getAccepted,
-      });
+      if (dbg) {
+        console.log('[SUPABASE REACHABILITY]', {
+          step: 'GET_fallback',
+          requestUrl: restRoot,
+          status: res.status,
+          acceptedAsReachable: getAccepted,
+        });
+      }
       if (getAccepted) {
         _supabaseReachabilityConfirmed = true;
       }
@@ -91,10 +100,12 @@ export async function isSupabaseReachable(): Promise<boolean> {
     return true;
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : String(e);
-    console.log('[SUPABASE REACHABILITY]', {
-      outcome: 'fetch_threw',
-      errorMessage,
-    });
+    if (dbg) {
+      console.log('[SUPABASE REACHABILITY]', {
+        outcome: 'fetch_threw',
+        errorMessage,
+      });
+    }
     return false;
   }
 }

@@ -27,7 +27,6 @@ import {
   logGuideConfigBoundary,
   resolveGuideRulesForPageType,
 } from './scoringConfigLoader';
-import { DEFAULT_SCORING_CONFIG } from './defaultScoringConfig';
 
 const GUIDE_MERGE_DEBUG = process.env.GEO_GUIDE_MERGE_DEBUG === '1';
 
@@ -94,12 +93,6 @@ export async function generateGeoRecommendations(
   _auditIssues: AuditIssue[],
   options?: GeoRecommendationsOptions
 ): Promise<GeoRecommendations> {
-  console.log('[GUIDE ENTRY]', {
-    pageType: options?.pageType,
-    optionConfigVersion: options?.activeScoringConfig?.version,
-    optionProfileKeys: Object.keys(options?.activeScoringConfig?.profiles ?? {}),
-    optionIsDefaultSingleton: options?.activeScoringConfig === DEFAULT_SCORING_CONFIG,
-  });
   const pageType = options?.pageType ?? 'editorial';
   const meta = options?.meta ?? {
     title: null,
@@ -125,11 +118,6 @@ export async function generateGeoRecommendations(
   };
   const config =
     options?.activeScoringConfig ?? (await loadActiveScoringConfig());
-  console.log('[GUIDE CONFIG SELECTED]', {
-    selectedVersion: config?.version,
-    selectedProfileKeys: Object.keys(config?.profiles ?? {}),
-    selectedIsDefaultSingleton: config === DEFAULT_SCORING_CONFIG,
-  });
   logGuideConfigBoundary('generateGeoRecommendations entry', pageType, config);
   const base = buildGeoRecommendationsFromSignals(
     toRecommendationContext(legacy),

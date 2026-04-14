@@ -468,6 +468,7 @@ export function logQuestionSourceStatus(payload: {
   tavilyMeta: TavilyFetchMeta;
   fallbackUsed: boolean;
 }): void {
+  if (process.env.GEO_QUESTION_SOURCE_STATUS_TRACE !== '1') return;
   const { tavilyMeta } = payload;
   const tavilyAttempted = tavilyMeta.tavilyNetworkScheduled;
   const tavilySuccess =

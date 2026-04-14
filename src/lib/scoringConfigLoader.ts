@@ -239,6 +239,12 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 let cachedConfig: GeoScoringConfig | null = null;
 let cachedAt = 0;
 
+/** Set GEO_CONFIG_DEBUG=1 to log Supabase config load branches (verbose). */
+function configLoaderDbg(...args: unknown[]): void {
+  if (process.env.GEO_CONFIG_DEBUG !== '1') return;
+  console.log(...args);
+}
+
 /** Set GEO_GUIDE_CONFIG_TRACE=1 to log config.profiles shape at recommendation boundaries. */
 export function logGuideConfigBoundary(
   tag: string,
@@ -267,7 +273,7 @@ export async function loadActiveScoringConfig(): Promise<GeoScoringConfig> {
   const supabaseUrlConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL);
   const anonKeyConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 
-  console.log('[CONFIG LOAD START]', {
+  configLoaderDbg('[CONFIG LOAD START]', {
     loadPath: 'direct_table_query_geo_scoring_config',
     note: 'does not use isSupabaseReachable / PostgREST root',
     supabaseUrlConfigured,
@@ -277,7 +283,7 @@ export async function loadActiveScoringConfig(): Promise<GeoScoringConfig> {
   if (!supabaseUrlConfigured || !anonKeyConfigured) {
     cachedConfig = DEFAULT_SCORING_CONFIG;
     cachedAt = now;
-    console.log('[CONFIG FALLBACK BRANCH]', 'missing_supabase_env');
+    configLoaderDbg('[CONFIG FALLBACK BRANCH]', 'missing_supabase_env');
     return DEFAULT_SCORING_CONFIG;
   }
 
@@ -290,7 +296,7 @@ export async function loadActiveScoringConfig(): Promise<GeoScoringConfig> {
       .limit(1)
       .maybeSingle();
 
-    console.log('[CONFIG TABLE QUERY]', {
+    configLoaderDbg('[CONFIG TABLE QUERY]', {
       queryRan: true,
       hasError: !!error,
       errorMessage: error?.message ?? null,
@@ -303,16 +309,16 @@ export async function loadActiveScoringConfig(): Promise<GeoScoringConfig> {
     if (error || !data?.config_json) {
       cachedConfig = DEFAULT_SCORING_CONFIG;
       cachedAt = now;
-      console.log('[CONFIG FALLBACK BRANCH]', 'query_error_or_missing_config');
+      configLoaderDbg('[CONFIG FALLBACK BRANCH]', 'query_error_or_missing_config');
       return DEFAULT_SCORING_CONFIG;
     }
 
     /* eslint-disable @typescript-eslint/no-explicit-any -- debug: raw row shape from Supabase */
-    console.log('[CONFIG SUCCESS]', {
+    configLoaderDbg('[CONFIG SUCCESS]', {
       version: (data?.config_json as any)?.version,
       profileKeys: Object.keys(((data?.config_json as any)?.profiles ?? {}) as object),
     });
-    console.log('[CONFIG META]', {
+    configLoaderDbg('[CONFIG META]', {
       version: (data?.config_json as any)?.version,
       profileKeys: Object.keys(((data?.config_json as any)?.profiles ?? {}) as object),
       editorialGuideRuleIds: ((data?.config_json as any)?.profiles?.editorial?.guideRules ?? []).map((x: any) => x.id),
@@ -328,7 +334,7 @@ export async function loadActiveScoringConfig(): Promise<GeoScoringConfig> {
     const errorMessage = e instanceof Error ? e.message : String(e);
     cachedConfig = DEFAULT_SCORING_CONFIG;
     cachedAt = now;
-    console.log('[CONFIG FALLBACK BRANCH]', 'catch', { errorMessage });
+    configLoaderDbg('[CONFIG FALLBACK BRANCH]', 'catch', { errorMessage });
     return DEFAULT_SCORING_CONFIG;
   }
 }

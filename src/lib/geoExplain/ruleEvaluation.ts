@@ -123,7 +123,7 @@ export async function runGeoRuleLayer(
   const logIssueRuleEval =
     pageType === 'editorial' &&
     !skipTextOnlyRules &&
-    process.env.GEO_ISSUE_RULE_EVAL_LOG !== '0';
+    process.env.GEO_ISSUE_RULE_EVAL_LOG === '1';
 
   for (const rule of issueRulesToUse) {
     if (skipTextOnlyRules) {

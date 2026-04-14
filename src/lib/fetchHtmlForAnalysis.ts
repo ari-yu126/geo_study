@@ -199,38 +199,7 @@ async function fetchNaverMobileAggressive(
     try {
       const html = await fetchHtml(mobileUrl, appOrigin);
       const ev = evaluateNaverMobileHtml(html);
-      console.log(
-        '[GEO_NAVER_MOBILE_EXTRACT]',
-        JSON.stringify({
-          phase: 'naver_mobile',
-          normalized_url: normalizedUrl,
-          fetch_target_url: mobileUrl,
-          attempt,
-          via: 'server',
-          insufficient: ev.insufficient,
-          reason: ev.reason,
-          rawBodyTextLength: ev.metrics.rawBodyTextLength,
-          paragraphLikeCount: ev.metrics.paragraphLikeCount,
-          headingCount: ev.metrics.headingCount,
-          naverModuleTextLength: ev.metrics.naverModuleTextLength,
-          naverModuleBlockCount: ev.metrics.naverModuleBlockCount,
-          jsonLdSupplementalLength: ev.metrics.jsonLdSupplementalLength,
-          meaningfulBodyLength: ev.metrics.meaningfulBodyLength,
-          citationExtractedChunkCount: ev.metrics.citationExtractedChunkCount,
-        })
-      );
       if (!ev.insufficient) {
-        console.log(
-          '[GEO_FETCH]',
-          JSON.stringify({
-            phase: 'naver_mobile',
-            normalized_url: normalizedUrl,
-            fetch_target_url: mobileUrl,
-            attempt,
-            via: 'server',
-            ok: true,
-          })
-        );
         return { ok: true, html, naverMobileUsedHeadless: false };
       }
       lastErr = `mobile_rejected:${ev.reason}`;
@@ -267,36 +236,7 @@ async function fetchNaverMobileAggressive(
   try {
     const html = await fetchHtmlViaHeadless(mobileUrl);
     const evH = evaluateNaverMobileHtml(html);
-    console.log(
-      '[GEO_NAVER_MOBILE_EXTRACT]',
-      JSON.stringify({
-        phase: 'naver_mobile',
-        normalized_url: normalizedUrl,
-        fetch_target_url: mobileUrl,
-        via: 'headless',
-        insufficient: evH.insufficient,
-        reason: evH.reason,
-        rawBodyTextLength: evH.metrics.rawBodyTextLength,
-        paragraphLikeCount: evH.metrics.paragraphLikeCount,
-        headingCount: evH.metrics.headingCount,
-        naverModuleTextLength: evH.metrics.naverModuleTextLength,
-        naverModuleBlockCount: evH.metrics.naverModuleBlockCount,
-        jsonLdSupplementalLength: evH.metrics.jsonLdSupplementalLength,
-        meaningfulBodyLength: evH.metrics.meaningfulBodyLength,
-        citationExtractedChunkCount: evH.metrics.citationExtractedChunkCount,
-      })
-    );
     if (!evH.insufficient) {
-      console.log(
-        '[GEO_FETCH]',
-        JSON.stringify({
-          phase: 'naver_mobile',
-          normalized_url: normalizedUrl,
-          fetch_target_url: mobileUrl,
-          via: 'headless',
-          ok: true,
-        })
-      );
       return { ok: true, html, naverMobileUsedHeadless: true };
     }
     lastErr = `headless_mobile_rejected:${evH.reason}`;
@@ -339,16 +279,6 @@ export async function fetchHtmlWithNaverFallback(
 
   if (!parsed) {
     const { html, transport } = await fetchHtmlWithRobustTransport(normalizedUrl, appOrigin);
-    console.log(
-      '[GEO_FETCH_SUMMARY]',
-      JSON.stringify({
-        normalized_url: normalizedUrl,
-        analysisFetchTargetUrl: normalizedUrl,
-        naver_used_pc_fallback: false,
-        naver_mobile_used_headless: false,
-        fetch_transport: transport,
-      })
-    );
     return {
       html,
       usedFetchUrl: normalizedUrl,
@@ -363,15 +293,6 @@ export async function fetchHtmlWithNaverFallback(
 
   const mobilePhase = await fetchNaverMobileAggressive(mobileUrl, normalizedUrl, appOrigin);
   if (mobilePhase.ok) {
-    console.log(
-      '[GEO_FETCH_SUMMARY]',
-      JSON.stringify({
-        normalized_url: normalizedUrl,
-        analysisFetchTargetUrl: mobileUrl,
-        naver_used_pc_fallback: false,
-        naver_mobile_used_headless: mobilePhase.naverMobileUsedHeadless,
-      })
-    );
     return {
       html: mobilePhase.html,
       usedFetchUrl: mobileUrl,
@@ -388,17 +309,6 @@ export async function fetchHtmlWithNaverFallback(
     const fetchTargetUrl = candidates[i]!;
     try {
       const html = await fetchHtml(fetchTargetUrl, appOrigin);
-      console.log(
-        '[GEO_FETCH]',
-        JSON.stringify({
-          phase: 'naver_pc_fallback',
-          normalized_url: normalizedUrl,
-          fetch_target_url: fetchTargetUrl,
-          attempt: i + 1,
-          total_candidates: candidates.length,
-          ok: true,
-        })
-      );
       console.warn(
         '[GEO_FETCH_SUMMARY]',
         JSON.stringify({

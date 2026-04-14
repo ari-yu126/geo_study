@@ -16,15 +16,17 @@ export async function waitForGeminiRateLimitSlot(label?: string): Promise<void> 
   const diff = now - lastGeminiCallAt;
   if (lastGeminiCallAt > 0 && diff < MIN_GAP_MS) {
     const waitMs = MIN_GAP_MS - diff;
-    console.log(
-      '[GEMINI_RATE_LIMIT]',
-      JSON.stringify({
-        waitedMs: waitMs,
-        label: label ?? 'unknown',
-        reason: 'min_gap_between_calls',
-        minGapMs: MIN_GAP_MS,
-      })
-    );
+    if (process.env.GEMINI_TRACE === '1') {
+      console.log(
+        '[GEMINI_RATE_LIMIT]',
+        JSON.stringify({
+          waitedMs: waitMs,
+          label: label ?? 'unknown',
+          reason: 'min_gap_between_calls',
+          minGapMs: MIN_GAP_MS,
+        })
+      );
+    }
     await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
   }
   lastGeminiCallAt = Date.now();

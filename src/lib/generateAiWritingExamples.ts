@@ -468,14 +468,12 @@ export async function generateAiWritingExamples(
   const promptDebug = resolveGuideRulePromptDebug(input, useGuideFirst ? 'guideRules' : 'fallback');
 
   const callGeminiOnce = async () => {
-    console.log('[AI WRITING] Gemini call start');
     try {
       await waitForGeminiRateLimitSlot('aiWritingExamples');
       const result = await model.generateContent([{ text: prompt }]);
-      console.log('[AI WRITING] Gemini call success');
       return result;
     } catch (err) {
-      console.log('[AI WRITING] Gemini call failed', err);
+      console.error('[AI WRITING] Gemini call failed', err);
       throw err;
     }
   };
@@ -506,8 +504,6 @@ export async function generateAiWritingExamples(
       };
     }
 
-    console.log('[AI WRITING RAW RESPONSE]', raw);
-
     const parsedJson = parseJsonFromLlmResponse(raw);
     if (!parsedJson.ok) {
       console.error('[AI WRITING PARSE FAILED]', raw);
@@ -518,16 +514,6 @@ export async function generateAiWritingExamples(
         detail:
           'JSON parse failed after all extractors. See server log [AI WRITING PARSE FAILED] for full raw.',
       };
-    }
-
-    try {
-      const serialized = JSON.stringify(parsedJson.value, null, 2);
-      console.log(
-        '[AI WRITING PARSED JSON]',
-        serialized.length > 16000 ? `${serialized.slice(0, 16000)}… (${serialized.length} chars)` : serialized
-      );
-    } catch {
-      console.log('[AI WRITING PARSED JSON] (non-serializable)', String(parsedJson.value).slice(0, 2000));
     }
 
     const data = normalizeWithFallbacks(parsedJson.value);
@@ -548,16 +534,6 @@ export async function generateAiWritingExamples(
         reason: 'parse',
         detail: `normalizeParsed: no usable fields (top-level keys: ${keys.length ? keys.slice(0, 20).join(', ') : 'n/a'}). Try nested wrappers or alternate key names.`,
       };
-    }
-
-    try {
-      const out = JSON.stringify(data, null, 2);
-      console.log(
-        '[AI WRITING NORMALIZED RESULT]',
-        out.length > 12000 ? `${out.slice(0, 12000)}…` : out
-      );
-    } catch {
-      console.log('[AI WRITING NORMALIZED RESULT] (log truncated)');
     }
 
     return { ok: true, data, guideRulePromptDebug: promptDebug };

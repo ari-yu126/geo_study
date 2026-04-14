@@ -805,15 +805,6 @@ export default function AuditPanel({
     setAiWritingFromCache(false);
   }, [result.normalizedUrl]);
 
-  useEffect(() => {
-    if (!result) return;
-    console.log('[RESULT_DEBUG]', {
-      url: result.url,
-      normalizedUrl: result.normalizedUrl,
-      analysisFetchTargetUrl: result.analysisFetchTargetUrl,
-    });
-  }, [result]);
-
   const AI_WRITING_FETCH_COOLDOWN_MS = 4000;
 
   const requestAiWritingExamples = useCallback(async () => {
@@ -860,7 +851,6 @@ export default function AuditPanel({
     const guideSig = getAiWritingGuideCacheSignature(body);
     const cached = readAiWritingCache(urlKey, guideSig);
     if (cached) {
-      console.log("[AI WRITING FETCH SKIPPED - USING EXISTING STATE]");
       setAiWritingExamplesData(cached.data);
       setAiWritingNotice(cached.notice ?? null);
       setAiWritingDegraded(Boolean(cached.degraded));
@@ -884,15 +874,12 @@ export default function AuditPanel({
 
     try {
       const requestBody = body;
-      console.log("[AI WRITING FETCH START]", requestBody);
       const res = await fetch("/api/ai-writing-examples", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
       });
-      console.log("[AI WRITING FETCH RESPONSE STATUS]", res.status);
       const json = (await res.json()) as AiWritingExamplesApiResponse & { error?: string };
-      console.log("[AI WRITING FETCH RESPONSE JSON]", json);
 
       if (!res.ok) {
         setAiWritingExamplesError(json.error ?? ("message" in json ? json.message : undefined) ?? "Request failed");
@@ -2062,11 +2049,6 @@ export default function AuditPanel({
                   result.meta,
                   ""
                 );
-                console.log("[AI WRITING BUTTON CLICKED]", {
-                  url: result.url,
-                  pageType: mapAiWritingPageType(result),
-                  locale: loc,
-                });
                 void requestAiWritingExamples();
               }}
               style={{

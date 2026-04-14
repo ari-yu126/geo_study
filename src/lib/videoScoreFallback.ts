@@ -36,13 +36,6 @@ export function estimateVideoCitationScore(params: EstimateVideoCitationParams):
   const raw = base + coverageBoost + matchBoost + lenBoost + trustBoost;
   const score = Math.round(Math.min(90, Math.max(0, raw)));
 
-  console.log('[VIDEO FALLBACK]', {
-    coverage: questionCoverageScore,
-    match: questionMatchScore,
-    len: enhancedContentTextLength,
-    estimatedCitationScore: score,
-  });
-
   return score;
 }
 

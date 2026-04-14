@@ -24,6 +24,11 @@ export type {
   PlatformType,
 } from '@/lib/analysisTypes';
 
+/** Set GEO_ANALYZE_API_LOG=1 to emit cache-hit and GEMINI_TRACE console lines from this route. */
+function shouldLogAnalyzeApiVerbose(): boolean {
+  return process.env.GEO_ANALYZE_API_LOG === '1';
+}
+
 // Analysis uses only loadActiveScoringConfig() (read active row). It never rebuilds GEO config,
 // never POSTs /api/geo-config/update, and never runs Gemini for monthly criteria generation.
 
@@ -176,7 +181,7 @@ export async function POST(req: Request) {
 
     const currentGeoConfigVersion = (await loadActiveScoringConfig()).version ?? null;
 
-    if (forceRefresh) {
+    if (forceRefresh && shouldLogAnalyzeApiVerbose()) {
       console.log(
         '[CACHE] analyze',
         JSON.stringify({
@@ -191,28 +196,30 @@ export async function POST(req: Request) {
   if (!forceRefresh) {
       const memHit = getMemoryCachedAnalysis(normalizedUrl, currentGeoConfigVersion);
       if (memHit && memHit.scores?.answerabilityScore !== undefined) {
-        console.log(
-          '[CACHE]',
-          JSON.stringify({
-            endpoint: '/api/analyze',
-            layer: 'memory',
-            normalizedUrl,
-            hit: true,
-            contentImprovementGuideEmbedded: true,
-          })
-        );
-        console.log(
-          '[GEMINI_TRACE]',
-          JSON.stringify({
-            endpoint: '/api/analyze',
-            normalizedUrl,
-            apiAnalyzeCacheHit: true,
-            cacheLayer: 'memory',
-            skippedDueToCachedAnalysis: true,
-            runAnalysisInvoked: false,
-            allGeminiGenerateContentSkipped: true,
-          })
-        );
+        if (shouldLogAnalyzeApiVerbose()) {
+          console.log(
+            '[CACHE]',
+            JSON.stringify({
+              endpoint: '/api/analyze',
+              layer: 'memory',
+              normalizedUrl,
+              hit: true,
+              contentImprovementGuideEmbedded: true,
+            })
+          );
+          console.log(
+            '[GEMINI_TRACE]',
+            JSON.stringify({
+              endpoint: '/api/analyze',
+              normalizedUrl,
+              apiAnalyzeCacheHit: true,
+              cacheLayer: 'memory',
+              skippedDueToCachedAnalysis: true,
+              runAnalysisInvoked: false,
+              allGeminiGenerateContentSkipped: true,
+            })
+          );
+        }
         if (process.env.QUESTION_COVERAGE_TRACE === '1') {
           console.log(
             '[QUESTION_COVERAGE_TRACE]',
@@ -249,28 +256,30 @@ export async function POST(req: Request) {
       const cached = await getCachedAnalysis(normalizedUrl, currentGeoConfigVersion);
       if (cached && cached.scores?.answerabilityScore !== undefined) {
         setMemoryCachedAnalysis(normalizedUrl, cached);
-        console.log(
-          '[CACHE]',
-          JSON.stringify({
-            endpoint: '/api/analyze',
-            layer: 'supabase',
-            normalizedUrl,
-            hit: true,
-            contentImprovementGuideEmbedded: true,
-          })
-        );
-        console.log(
-          '[GEMINI_TRACE]',
-          JSON.stringify({
-            endpoint: '/api/analyze',
-            normalizedUrl,
-            apiAnalyzeCacheHit: true,
-            cacheLayer: 'supabase',
-            skippedDueToCachedAnalysis: true,
-            runAnalysisInvoked: false,
-            allGeminiGenerateContentSkipped: true,
-          })
-        );
+        if (shouldLogAnalyzeApiVerbose()) {
+          console.log(
+            '[CACHE]',
+            JSON.stringify({
+              endpoint: '/api/analyze',
+              layer: 'supabase',
+              normalizedUrl,
+              hit: true,
+              contentImprovementGuideEmbedded: true,
+            })
+          );
+          console.log(
+            '[GEMINI_TRACE]',
+            JSON.stringify({
+              endpoint: '/api/analyze',
+              normalizedUrl,
+              apiAnalyzeCacheHit: true,
+              cacheLayer: 'supabase',
+              skippedDueToCachedAnalysis: true,
+              runAnalysisInvoked: false,
+              allGeminiGenerateContentSkipped: true,
+            })
+          );
+        }
         if (process.env.QUESTION_COVERAGE_TRACE === '1') {
           console.log(
             '[QUESTION_COVERAGE_TRACE]',
@@ -307,17 +316,19 @@ export async function POST(req: Request) {
     }
 
     // 2) 캐시가 없으면 새로 분석 (appOrigin 전달 시 프록시 경유 → iframe과 동일 HTML 사용)
-    console.log(
-      '[GEMINI_TRACE]',
-      JSON.stringify({
-        endpoint: '/api/analyze',
-        normalizedUrl,
-        apiAnalyzeCacheHit: false,
-        skippedDueToCachedAnalysis: false,
-        runAnalysisInvoked: true,
-        forceRefresh,
-      })
-    );
+    if (shouldLogAnalyzeApiVerbose()) {
+      console.log(
+        '[GEMINI_TRACE]',
+        JSON.stringify({
+          endpoint: '/api/analyze',
+          normalizedUrl,
+          apiAnalyzeCacheHit: false,
+          skippedDueToCachedAnalysis: false,
+          runAnalysisInvoked: true,
+          forceRefresh,
+        })
+      );
+    }
     if (process.env.QUESTION_COVERAGE_TRACE === '1') {
       console.log(
         '[QUESTION_COVERAGE_TRACE]',

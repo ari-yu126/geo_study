@@ -245,7 +245,7 @@ export function mergeGuideRulesIntoRecommendations(
     if (hit) matched.push(gr);
   }
 
-  console.log('MATCHED RULES:', matched);
+  guideMergeDbg('MATCHED RULES:', matched);
 
   if (matched.length === 0) {
     guideMergeDbg('merge exit: no basedOn match', {
@@ -258,7 +258,7 @@ export function mergeGuideRulesIntoRecommendations(
   }
 
   const sorted = sortMatchedGuides(matched);
-  console.log(
+  guideMergeDbg(
     'HAS CONTENT CHECK:',
     sorted.map((g) => ({
       id: g.id,

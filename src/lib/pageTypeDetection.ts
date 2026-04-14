@@ -136,7 +136,6 @@ export function detectPageTypeWithLog(
       editorialProtectionOverrodeCommerce: false,
       commerceThreshold: COMMERCE_SCORE_THRESHOLD,
     };
-    console.log(`[Detection] URL matches known commerce domain: ${host}`, log);
     return { pageType: 'commerce', log };
   }
 

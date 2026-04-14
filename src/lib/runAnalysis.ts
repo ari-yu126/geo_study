@@ -167,7 +167,6 @@ async function runAnalysisImpl(
 
     // 유튜브 전용: ytInitialData/og → 필요 시 oEmbed fallback → effectiveContentText로 questionCoverage/answerability 0 방지
     if (isYouTubeUrl(url)) {
-      console.log('[VIDEO] branch entered', { url });
       const VIDEO_DESC_PLACEHOLDER = 'No description available.';
       let meta: AnalysisMeta;
       const ytMeta = await fetchYouTubeMetadata(url);
@@ -220,10 +219,6 @@ async function runAnalysisImpl(
           throw e;
         }
       }
-      if (!geminiResult) {
-        console.log('[VIDEO] geminiResult is null — Gemini video analysis failed/skipped');
-      }
-
       logVideoTavilyCheckpoint({
         phase: 'youtube_branch_gemini_outcome',
         normalizedUrl,
@@ -316,13 +311,6 @@ async function runAnalysisImpl(
           topicTokens: topic.essentialTokens,
         });
 
-        console.log('[VIDEO Q]', {
-          raw: rawSearchQuestions.length,
-          filtered: searchEvidence.length,
-          canonical: searchQuestions.length,
-          sample: searchQuestions.slice(0, 3).map((q) => q.text.slice(0, 60)),
-        });
-    
         // 5) actual citation 체크
         const syntheticQuestions: SearchQuestion[] = geminiResult.citationKeywords
           .slice(0, 5)
@@ -344,17 +332,7 @@ async function runAnalysisImpl(
           coverageMatchInput: videoCoverageInput,
           originalInputUrl: inputUrl,
         });
-    
-        console.log('[VIDEO CHECK]', {
-          usedOEmbed: !!oembed,
-          enhancedContentTextLength: enhancedContentText.length,
-          searchQuestionsLen: coreResult.searchQuestions?.length ?? 0,
-          coveredTrue: coreResult.searchQuestionCovered?.filter(Boolean).length ?? 0,
-          questionCoverage: coreResult.scores.questionCoverage,
-          questionMatchScore: coreResult.scores.questionMatchScore,
-          finalScore: coreResult.scores.finalScore,
-        });
-    
+
         coreResult.axisScores = buildAxisScores(coreResult);
         const auditVideo = await deriveAuditIssues(coreResult);
         const { issues, passedChecks, geoIssues, geoPassedItems, opportunities, platformConstraints } =
@@ -392,12 +370,6 @@ async function runAnalysisImpl(
         const uncoveredQuestions = videoDisplayApplied.uncoveredOrderedForRecommendations;
 
         logGuideConfigBoundary('runAnalysis before generateGeoRecommendations', 'video', activeScoringConfig);
-        console.log('[RUNANALYSIS -> GUIDE]', {
-          pageType: 'video',
-          passedConfigVersion: activeScoringConfig?.version,
-          passedProfileKeys: Object.keys(activeScoringConfig?.profiles ?? {}),
-          isDefaultSingleton: activeScoringConfig === DEFAULT_SCORING_CONFIG,
-        });
         const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
           searchQuestions: videoDisplayApplied.searchQuestions,
           pageQuestions: coreResult.pageQuestions,
@@ -586,12 +558,6 @@ async function runAnalysisImpl(
       }
       const uncoveredQuestions = videoDisplayFb.uncoveredOrderedForRecommendations;
       logGuideConfigBoundary('runAnalysis before generateGeoRecommendations', 'video', activeScoringConfig);
-      console.log('[RUNANALYSIS -> GUIDE]', {
-        pageType: 'video',
-        passedConfigVersion: activeScoringConfig?.version,
-        passedProfileKeys: Object.keys(activeScoringConfig?.profiles ?? {}),
-        isDefaultSingleton: activeScoringConfig === DEFAULT_SCORING_CONFIG,
-      });
       const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
         searchQuestions: videoDisplayFb.searchQuestions,
         pageQuestions: coreResult.pageQuestions,
@@ -1658,12 +1624,6 @@ async function runAnalysisImpl(
 
     const uncoveredQuestions = questionDisplayApplied.uncoveredOrderedForRecommendations;
     logGuideConfigBoundary('runAnalysis before generateGeoRecommendations', pageType, activeScoringConfig);
-    console.log('[RUNANALYSIS -> GUIDE]', {
-      pageType,
-      passedConfigVersion: activeScoringConfig?.version,
-      passedProfileKeys: Object.keys(activeScoringConfig?.profiles ?? {}),
-      isDefaultSingleton: activeScoringConfig === DEFAULT_SCORING_CONFIG,
-    });
     const recommendations = await generateGeoRecommendations(uncoveredQuestions, issues, {
       searchQuestions: questionDisplayApplied.searchQuestions,
       pageQuestions,

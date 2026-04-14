@@ -77,10 +77,6 @@ export async function saveGeoAnalysisResult(
       .select()
       .single();
 
-    console.log('[geo_analysis_results] insert result', { data, error, payload });
-    console.log('[geo_analysis_results] using admin client:', !!supabaseAdmin);
-    console.log('[geo_analysis_results] target project url:', process.env.NEXT_PUBLIC_SUPABASE_URL);
-
     if (error) {
       return {
         ok: false,

@@ -352,38 +352,40 @@ export function applySearchQuestionsFallbackIfEmpty(
 
   const reason = inferFallbackReason(ctx.debugCounts);
 
-  console.log(
-    '[QUESTION_FALLBACK_TOPIC]',
-    JSON.stringify({
-      normalizedUrl: ctx.normalizedUrl,
-      pageType: ctx.pageType,
-      rawTopicCandidates: debug.rawTopicCandidates,
-      cleanedPrimaryTopic: debug.cleanedPrimaryTopic,
-      cleanedSecondaryTopic: debug.cleanedSecondaryTopic,
-      generatedFallbackQuestions: generated.map((q) => q.text),
-    })
-  );
+  if (process.env.QUESTION_FALLBACK_DECISION_DEBUG === '1') {
+    console.log(
+      '[QUESTION_FALLBACK_TOPIC]',
+      JSON.stringify({
+        normalizedUrl: ctx.normalizedUrl,
+        pageType: ctx.pageType,
+        rawTopicCandidates: debug.rawTopicCandidates,
+        cleanedPrimaryTopic: debug.cleanedPrimaryTopic,
+        cleanedSecondaryTopic: debug.cleanedSecondaryTopic,
+        generatedFallbackQuestions: generated.map((q) => q.text),
+      })
+    );
 
-  console.log(
-    '[QUESTION_FALLBACK_DECISION]',
-    JSON.stringify({
-      normalizedUrl: ctx.normalizedUrl,
-      pageType: ctx.pageType,
-      tavilyDerivedQuestionCountBeforeFallback: tavilyDerivedCountBeforeFallback,
-      pipelineCounts: ctx.debugCounts ?? null,
-      fallbackUsed: true,
-      fallbackReason: reason,
-    })
-  );
+    console.log(
+      '[QUESTION_FALLBACK_DECISION]',
+      JSON.stringify({
+        normalizedUrl: ctx.normalizedUrl,
+        pageType: ctx.pageType,
+        tavilyDerivedQuestionCountBeforeFallback: tavilyDerivedCountBeforeFallback,
+        pipelineCounts: ctx.debugCounts ?? null,
+        fallbackUsed: true,
+        fallbackReason: reason,
+      })
+    );
 
-  console.log(
-    '[QUESTION_FALLBACK_USED]',
-    JSON.stringify({
-      normalizedUrl: ctx.normalizedUrl,
-      pageType: ctx.pageType,
-      fallbackUsed: true,
-    })
-  );
+    console.log(
+      '[QUESTION_FALLBACK_USED]',
+      JSON.stringify({
+        normalizedUrl: ctx.normalizedUrl,
+        pageType: ctx.pageType,
+        fallbackUsed: true,
+      })
+    );
+  }
 
   return { searchQuestions: generated, fallbackUsed: true };
 }

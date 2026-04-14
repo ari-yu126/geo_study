@@ -665,7 +665,6 @@ export async function POST(req: Request) {
       process.env.GENERATIVE_MODEL ??
       process.env.DEFAULT_GEMINI_MODEL ??
       'text-bison-001';
-    console.log('[GEMINI] chosen model for geo-config update:', chosenModel);
 
     const model = genAI.getGenerativeModel({ model: chosenModel });
 

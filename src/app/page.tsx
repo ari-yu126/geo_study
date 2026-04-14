@@ -42,7 +42,6 @@ function getInitialUrlSanitized(): string {
 function postAnalyzeRequest(targetUrl: string, forceRefresh: boolean) {
   const trimmed = sanitizeIncomingAnalyzeUrl(targetUrl);
   const canonical = trimmed ? normalizeUrl(trimmed) : "";
-  console.log("[ANALYZE REQUEST]", { url: canonical, forceRefresh });
   return fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
