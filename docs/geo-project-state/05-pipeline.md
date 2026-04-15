@@ -40,7 +40,7 @@ The **Explain layer** is **downstream of scoring**: it turns axis scores and rul
 runAnalysis(url: string): Promise<AnalysisResult>
 
 ### Input
-- `url`: target page URL
+- `url`: sanitized request URL (server derives `normalizeUrl` for cache identity; fetch may use `resolveFetchTargetUrl` for network-preferred host)
 
 ### Output
 - `AnalysisResult`
@@ -55,8 +55,9 @@ runAnalysis(url: string): Promise<AnalysisResult>
 ## Pipeline Steps
 
 1. **Fetch HTML**  
-   - `fetchHtml(url)`  
-   - retrieves raw HTML content
+   - `fetchHtmlWithNaverFallback` / `fetchHtml` (see `src/lib/fetchHtmlForAnalysis.ts`, `src/lib/htmlAnalyzer.ts`)  
+   - resolves a **fetch target** (may differ from normalized identity URL, e.g. `www` vs apex) and records **post-redirect** URL when available  
+   - retrieves raw HTML for extraction
 
 2. **Extract metadata and content**  
    - `extractMetaAndContent(html)`  

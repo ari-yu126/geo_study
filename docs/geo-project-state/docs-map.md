@@ -57,6 +57,7 @@ This file is the **full** system documentation map for the GEO Analyzer: numbere
 ### 06 — UI and Cache
 `06-ui-and-cache.md`
 - UI structure (AuditPanel, Dashboard, iframe overlay); **AuditPanel** main block order after the score: issues → question coverage → strengths → content improvement guide (see file for rationale and issue-based final-score note)
+- **URL fields:** `normalizedUrl` vs display / fetch URLs; preview modes (live `/api/proxy` vs static card: host blocklist without `pageType` gate, runtime fallback on same-origin proxy only, **no** raw-URL iframe when proxy fails — avoids blank preview; optional `?debug=1` for static card internal copy)
 - Supabase caching strategy (24h TTL)
 - Environment variables
 

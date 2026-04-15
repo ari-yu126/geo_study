@@ -64,6 +64,17 @@ This document provides a quick index of key files and modules used in the GEO An
 
 ---
 
+## URL normalization & preview (supporting modules)
+
+- `src/lib/normalizeUrl.ts` — canonical URL for cache keys; product-detail / search identity query handling  
+- `src/lib/resolveFetchTargetUrl.ts` — network fetch target when it should differ from normalized identity  
+- `src/lib/previewPolicy.ts` — apex host blocklist for live iframe (`LIVE_PREVIEW_BLOCKED_HOSTS`); static card + open in new tab (**not** gated on `pageType`)  
+- `src/lib/previewRuntimeFallback.ts` — heuristics to switch from live iframe to static preview on runtime errors (**`/api/proxy` same-origin iframe only**)  
+- `src/app/api/proxy/route.ts` — HTML proxy for preview; `X-GEO-Upstream-Final-Url` for server-side fetch; upstream fetch failures return **502** JSON (`ok: false`, `errorType` e.g. `REDIRECT_LIMIT` vs `FETCH_FAILED`); excessive redirects are logged at **warn**  
+- `src/app/components/StaticSitePreviewCard.tsx` — static preview card; user vs debug explainer copy; `?debug=1` / `?debug=true` from the app page enables debug copy
+
+---
+
 ## Cache / Database
 
 - Supabase table: `analysis_history`  

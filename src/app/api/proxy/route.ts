@@ -318,6 +318,28 @@ function decodeUrlHtmlEntities(raw: string): string {
     .replace(/&#39;|&apos;/gi, "'");
 }
 
+/** Walk Error.cause chain (e.g. undici: fetch failed → redirect count exceeded). */
+function describeProxyFetchFailure(err: unknown): {
+  detail: string;
+  errorType: 'REDIRECT_LIMIT' | 'FETCH_FAILED';
+} {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  while (cur instanceof Error && !seen.has(cur)) {
+    seen.add(cur);
+    if (cur.message) parts.push(cur.message);
+    cur = cur.cause;
+  }
+  if (parts.length === 0) parts.push(String(err ?? 'unknown error'));
+  const detail = parts.filter(Boolean).join(' | ');
+  const lower = detail.toLowerCase();
+  const isRedirect =
+    lower.includes('redirect count exceeded') ||
+    lower.includes('too many redirects');
+  return { detail, errorType: isRedirect ? 'REDIRECT_LIMIT' : 'FETCH_FAILED' };
+}
+
 export async function GET(req: NextRequest) {
   let url = req.nextUrl.searchParams.get('url');
   const goldenParam = req.nextUrl.searchParams.get('golden') ?? '';
@@ -615,20 +637,24 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
-    console.error('[proxy] GET fetch failed:', err);
-    const errorHtml = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0a0f1a;color:#6b7d96;font-family:system-ui;text-align:center">
-<div>
-<p style="font-size:14px;margin-bottom:8px">사이트를 불러올 수 없습니다</p>
-<p style="font-size:11px;color:#374357">${err instanceof Error ? err.message : String(err)}</p>
-</div>
-</body></html>`;
-
-    return new NextResponse(errorHtml, {
-      status: 200,
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
-    });
+    const { detail, errorType } = describeProxyFetchFailure(err);
+    const target = typeof url === 'string' ? url : '(unknown)';
+    if (errorType === 'REDIRECT_LIMIT') {
+      console.warn('[proxy] GET redirect limit:', target.slice(0, 200), detail);
+    } else {
+      console.error('[proxy] GET fetch failed:', err);
+    }
+    return NextResponse.json(
+      {
+        ok: false,
+        errorType,
+        upstreamStatus: 0,
+        upstreamStatusText: detail,
+        finalUrl: target,
+        errorSnippet: '',
+      },
+      { status: 502 }
+    );
   }
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useEffect, useRef, useCallback } from "react";
+import { Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type {
   AnalysisResult,
   AuditIssue,
@@ -13,6 +13,12 @@ import { toEmbedUrl } from "@/lib/youtubeMetadataExtractor";
 import { deriveAuditIssues } from "@/lib/issueDetector";
 import AuditPanel from "./components/AuditPanel";
 import AuditMarker from "./components/AuditMarker";
+import StaticSitePreviewCard from "./components/StaticSitePreviewCard";
+import { shouldUseStaticPreviewOnly } from "@/lib/previewPolicy";
+import {
+  notePreviewRuntimeFailure,
+  resetPreviewRuntimeErrorBudget,
+} from "@/lib/previewRuntimeFallback";
 import { GEO_UI_HIDE_COVERAGE_AND_PPT } from "./geoUiFlags";
 import { GEO_REPORT_LABELS_KO } from "./utils/geoReportLabels";
 
@@ -79,6 +85,34 @@ async function resolvePreviewIframeSrc(
   return { src: canonical, usedDirectFallback: true };
 }
 
+async function configurePreviewForResult(
+  resResult: import("@/lib/analysisTypes").AnalysisResult,
+  canonical: string,
+  setIframeSrc: (s: string) => void,
+  setIframeDirectFallback: (v: boolean) => void
+): Promise<void> {
+  if (
+    shouldUseStaticPreviewOnly({
+      pageType: resResult.pageType,
+      url: resResult.url,
+      normalizedUrl: resResult.normalizedUrl,
+    })
+  ) {
+    setIframeSrc("");
+    setIframeDirectFallback(false);
+    return;
+  }
+  const topChunks = (resResult.chunkCitations ?? [])
+    .slice()
+    .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
+    .slice(0, 3);
+  const golden = topChunks.map((c: { index: number }) => c.index).join(",");
+  const reasons = topChunks.map((c: { reason?: string }) => c.reason ?? "AI 분석 기반 고품질 문단").join("||");
+  const { src: previewSrc, usedDirectFallback } = await resolvePreviewIframeSrc(canonical, golden, reasons);
+  setIframeSrc(previewSrc);
+  setIframeDirectFallback(usedDirectFallback);
+}
+
 export default function Home() {
   const [url, setUrl] = useState(getInitialUrlSanitized);
   const [status, setStatus] = useState<Status>("idle");
@@ -103,10 +137,30 @@ export default function Home() {
   const [iframeSrc, setIframeSrc] = useState<string>("");
   /** True when /api/proxy returned an error and iframe loads the target site directly. */
   const [iframeDirectFallback, setIframeDirectFallback] = useState(false);
+  /** Live iframe threw (same-origin only); show static card without maintaining host blocklist. */
+  const [runtimeStaticFallback, setRuntimeStaticFallback] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const currentAnalyzedUrlRef = useRef<string>("");
   const highlightedElRef = useRef<{ el: HTMLElement; originalBg: string; originalBoxShadow: string } | null>(null);
+
+  /** `?debug=1` or `?debug=true` — static preview card shows internal reason copy (StaticSitePreviewCard). */
+  const [staticPreviewDebug, setStaticPreviewDebug] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sync = () => {
+      try {
+        const q = new URLSearchParams(window.location.search);
+        const d = q.get("debug");
+        setStaticPreviewDebug(d === "1" || d === "true");
+      } catch {
+        setStaticPreviewDebug(false);
+      }
+    };
+    sync();
+    window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, [url, status]);
 
   // Polluted ?url=...: strip debug flags etc. without forcing apex/www canonicalization in the address bar.
   useEffect(() => {
@@ -142,6 +196,118 @@ export default function Home() {
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
+
+  const policyStaticOnly = useMemo(() => {
+    if (!result) return false;
+    return shouldUseStaticPreviewOnly({
+      pageType: result.pageType,
+      url: result.url,
+      normalizedUrl: result.normalizedUrl,
+    });
+  }, [result]);
+
+  const showLiveIframe =
+    status === "success" &&
+    !!result &&
+    !!iframeSrc &&
+    !policyStaticOnly &&
+    !runtimeStaticFallback &&
+    /** Server proxy failed — loading the raw URL in iframe usually yields a blank frame (X-Frame-Options etc.). */
+    !iframeDirectFallback;
+
+  /**
+   * Same-origin proxy iframe only: if the embedded document throws, fall back to static preview.
+   * Cross-origin direct iframe cannot be instrumented — host policy blocklist still helps there.
+   */
+  useEffect(() => {
+    if (!showLiveIframe) {
+      resetPreviewRuntimeErrorBudget();
+      return;
+    }
+    // Only `/api/proxy` is same-origin; direct fallback + embeds are cross-origin — never touch their Window.
+    if (!iframeSrc.startsWith("/api/proxy")) {
+      resetPreviewRuntimeErrorBudget();
+      return;
+    }
+
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+
+    let detach: (() => void) | undefined;
+
+    const wire = () => {
+      try {
+        detach?.();
+      } catch {
+        /* iframe may have navigated cross-origin after listeners were attached */
+      }
+      detach = undefined;
+      try {
+        const w = iframe.contentWindow;
+        if (!w) return;
+        resetPreviewRuntimeErrorBudget();
+
+        const textFromError = (e: ErrorEvent) =>
+          [
+            e.message,
+            e.filename,
+            e.error && typeof e.error === "object" && "message" in e.error
+              ? String((e.error as Error).message)
+              : "",
+            e.error && typeof e.error === "object" && "stack" in e.error
+              ? String((e.error as Error).stack)
+              : "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+
+        const textFromRejection = (e: PromiseRejectionEvent) => {
+          const r = e.reason;
+          if (r == null) return "";
+          if (typeof r === "string") return r;
+          if (typeof r === "object" && "message" in r) return String((r as Error).message) + "\n" + String((r as Error).stack ?? "");
+          return String(r);
+        };
+
+        const onErr = (e: Event) => {
+          if (e.type !== "error") return;
+          const msg = textFromError(e as ErrorEvent);
+          if (notePreviewRuntimeFailure(msg)) setRuntimeStaticFallback(true);
+        };
+        const onRej = (e: Event) => {
+          if (e.type !== "unhandledrejection") return;
+          const msg = textFromRejection(e as PromiseRejectionEvent);
+          if (notePreviewRuntimeFailure(msg)) setRuntimeStaticFallback(true);
+        };
+
+        w.addEventListener("error", onErr, true);
+        w.addEventListener("unhandledrejection", onRej);
+        detach = () => {
+          try {
+            w.removeEventListener("error", onErr, true);
+            w.removeEventListener("unhandledrejection", onRej);
+          } catch {
+            /* navigated to cross-origin — cannot access nested Window anymore */
+          }
+        };
+      } catch {
+        /* cross-origin */
+      }
+    };
+
+    iframe.addEventListener("load", wire);
+    try {
+      if (iframe.contentDocument?.readyState === "complete") queueMicrotask(wire);
+    } catch {
+      /* cross-origin before load */
+    }
+
+    return () => {
+      iframe.removeEventListener("load", wire);
+      detach?.();
+      resetPreviewRuntimeErrorBudget();
+    };
+  }, [showLiveIframe, iframeSrc, result?.normalizedUrl, iframeDirectFallback]);
 
   useEffect(() => {
     if (!result) return;
@@ -191,6 +357,7 @@ export default function Home() {
     setActiveIssueId(null);
     setAnalyzeMeta(null);
     setIframeDirectFallback(false);
+    setRuntimeStaticFallback(false);
 
     const stepInterval = setInterval(() => {
       setLoadingStep((prev) => {
@@ -219,15 +386,7 @@ export default function Home() {
         fromCache: Boolean(data.fromCache),
         cacheLayer: typeof data.cacheLayer === "string" ? data.cacheLayer : "none",
       });
-      const topChunks = (resResult.chunkCitations ?? [])
-        .slice()
-        .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
-        .slice(0, 3);
-      const golden = topChunks.map((c: { index: number }) => c.index).join(",");
-      const reasons = topChunks.map((c: { reason?: string }) => c.reason ?? "AI 분석 기반 고품질 문단").join("||");
-      const { src: previewSrc, usedDirectFallback } = await resolvePreviewIframeSrc(canonical, golden, reasons);
-      setIframeSrc(previewSrc);
-      setIframeDirectFallback(usedDirectFallback);
+      await configurePreviewForResult(resResult, canonical, setIframeSrc, setIframeDirectFallback);
       setStatus("success");
       setUrl(resResult.url);
       currentAnalyzedUrlRef.current = resResult.normalizedUrl;
@@ -250,6 +409,7 @@ export default function Home() {
     setReanalyzing(true);
     setPositionData(null);
     setActiveIssueId(null);
+    setRuntimeStaticFallback(false);
     currentAnalyzedUrlRef.current = canonical;
 
     try {
@@ -267,15 +427,7 @@ export default function Home() {
       setUrl(resResult.url);
       currentAnalyzedUrlRef.current = resResult.normalizedUrl;
 
-      const topChunks = (resResult.chunkCitations ?? [])
-        .slice()
-        .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
-        .slice(0, 3);
-      const golden = topChunks.map((c: { index: number }) => c.index).join(",");
-      const reasons = topChunks.map((c: { reason?: string }) => c.reason ?? "AI 분석 기반 고품질 문단").join("||");
-      const { src: previewSrc, usedDirectFallback } = await resolvePreviewIframeSrc(canonical, golden, reasons);
-      setIframeSrc(previewSrc);
-      setIframeDirectFallback(usedDirectFallback);
+      await configurePreviewForResult(resResult, canonical, setIframeSrc, setIframeDirectFallback);
 
       const browserUrl = new URL(window.location.href);
       browserUrl.searchParams.set("url", resResult.url);
@@ -323,6 +475,7 @@ export default function Home() {
     setIframeScrollTop(0);
     setIframeSrc("");
     setIframeDirectFallback(false);
+    setRuntimeStaticFallback(false);
     setPassedChecks([]);
     setPlatformConstraints(undefined);
     setAnalyzeMeta(null);
@@ -442,6 +595,8 @@ export default function Home() {
 
   // ── 결과 화면: 좌측 패널 + 우측 사이트 프리뷰 ──
   if (status === "success" && result) {
+    const staticSitePreview =
+      policyStaticOnly || runtimeStaticFallback || iframeDirectFallback;
     const videoDescriptionSnippet =
       result.meta.description?.trim() || result.meta.ogDescription?.trim() || "";
     return (
@@ -503,59 +658,56 @@ export default function Home() {
               )}
             </div>
           )}
-          {iframeDirectFallback && (
-            <div
-              style={{
-                flexShrink: 0,
-                padding: "8px 12px",
-                background: "rgba(251, 191, 36, 0.12)",
-                borderBottom: "1px solid rgba(251, 191, 36, 0.35)",
-                fontSize: 11,
-                color: "#e2e8f0",
-                lineHeight: 1.45,
-              }}
-            >
-              프리뷰: 서버 프록시가 해당 URL에서 HTML을 가져오지 못해 <strong style={{ color: "#fbbf24" }}>원본 페이지를 직접</strong> 불러옵니다. 일부 쇼핑몰은 iframe 표시를 막을 수 있습니다. 문단 하이라이트는 프록시 경로에서만 동작합니다.
-            </div>
-          )}
-          {/* iframe */}
-          <iframe
-            ref={iframeRef}
-            src={iframeSrc}
-            style={{
-              flex: 1,
-              width: "100%",
-              minHeight: 200,
-              border: "none",
-              background: "#fff",
-            }}
-            sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation"
-            referrerPolicy={iframeSrc.includes("youtube-nocookie.com") ? "strict-origin-when-cross-origin" : "no-referrer"}
-            onLoad={handleIframeLoad}
-          />
-
-          {/* 오버레이 컨테이너 */}
-          <div
-            ref={overlayRef}
-            style={{
-              position: "absolute",
-              inset: 0,
-              pointerEvents: "none",
-              overflow: "hidden",
-            }}
-          >
-            {issues.map((issue) => (
-              <AuditMarker
-                key={issue.id}
-                issue={issue}
-                active={activeIssueId === issue.id}
-                iframeScrollTop={iframeScrollTop}
-                onClick={() => handleIssueClick(issue.id)}
+          {staticSitePreview ? (
+            <StaticSitePreviewCard
+              result={result}
+              debug={staticPreviewDebug}
+              fallbackReason={
+                runtimeStaticFallback && !policyStaticOnly
+                  ? "runtime"
+                  : iframeDirectFallback
+                    ? "proxy_unavailable"
+                    : "policy"
+              }
+            />
+          ) : (
+            <>
+              <iframe
+                ref={iframeRef}
+                src={iframeSrc}
+                style={{
+                  flex: 1,
+                  width: "100%",
+                  minHeight: 200,
+                  border: "none",
+                  background: "#fff",
+                }}
+                sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation"
+                referrerPolicy={iframeSrc.includes("youtube-nocookie.com") ? "strict-origin-when-cross-origin" : "no-referrer"}
+                onLoad={handleIframeLoad}
               />
-            ))}
-          </div>
 
-          {/* 이슈 개수 배지 */}
+              <div
+                ref={overlayRef}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  pointerEvents: "none",
+                  overflow: "hidden",
+                }}
+              >
+                {issues.map((issue) => (
+                  <AuditMarker
+                    key={issue.id}
+                    issue={issue}
+                    active={activeIssueId === issue.id}
+                    iframeScrollTop={iframeScrollTop}
+                    onClick={() => handleIssueClick(issue.id)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
           <div
             style={{
               position: "absolute",
