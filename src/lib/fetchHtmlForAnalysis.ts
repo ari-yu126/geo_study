@@ -30,6 +30,16 @@ function buildAggregatedFetchFailureMessage(targetUrl: string, errors: string[])
 }
 
 /**
+ * Proxy/direct already saw HTTP 402 (or gateway wrapping upstream 402). Headless usually repeats the same and only adds Playwright noise on serverless.
+ * Opt out: set GEO_HEADLESS_FORCE_ON_PAYWALL=1 to still attempt headless.
+ */
+function transportErrorsAreOnlyHttp402Class(errors: string[]): boolean {
+  if (process.env.GEO_HEADLESS_FORCE_ON_PAYWALL === '1') return false;
+  if (errors.length === 0) return false;
+  return errors.every((m) => /\b402\b|payment\s+required|upstream\s+http\s+402/i.test(m));
+}
+
+/**
  * Try /api/proxy when appOrigin is set, then same-URL direct fetch, then Playwright.
  * Used for commerce sites (e.g. Cloudflare) where one transport sometimes succeeds.
  */
@@ -54,6 +64,10 @@ export async function fetchHtmlWithRobustTransport(
     } catch (e) {
       errors.push(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  if (transportErrorsAreOnlyHttp402Class(errors)) {
+    throw new Error(buildAggregatedFetchFailureMessage(targetUrl, errors));
   }
 
   if (!isPlaywrightHeadlessGloballyEnabled()) {
