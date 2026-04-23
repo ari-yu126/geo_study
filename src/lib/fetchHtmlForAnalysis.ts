@@ -7,12 +7,27 @@
 
 import { computeNaverMobileBodyMetrics } from './articleExtraction';
 import { fetchHtml } from './htmlAnalyzer';
-import { fetchHtmlViaHeadless } from './headlessHtmlFetch';
+import { fetchHtmlViaHeadless, isPlaywrightHeadlessGloballyEnabled } from './headlessHtmlFetch';
 import { parseNaverBlogPostFromUrlString } from './canonicalizePlatformUrl';
 import { resolveFetchTargetUrl } from './resolveFetchTargetUrl';
 
 /** How HTML was retrieved for non-Naver URLs (proxy may return 502 when upstream blocks bots). */
 export type HtmlFetchTransport = 'proxy' | 'direct' | 'headless';
+
+function stripRepeatedFailedToFetchPrefix(targetUrl: string, message: string): string {
+  const prefix = `Failed to fetch ${targetUrl}: `;
+  return message.startsWith(prefix) ? message.slice(prefix.length) : message;
+}
+
+function buildAggregatedFetchFailureMessage(targetUrl: string, errors: string[]): string {
+  const parts = errors.map((m) => stripRepeatedFailedToFetchPrefix(targetUrl, m));
+  const body = parts.join(' | ');
+  const paywalled = errors.some((m) => /\b402\b|Payment Required/i.test(m));
+  const hint = paywalled
+    ? ' Some publishers return HTTP 402 or block server-side fetches; try a URL that serves public HTML or paste content if your product supports it.'
+    : '';
+  return `Failed to fetch ${targetUrl}: ${body}${hint}`;
+}
 
 /**
  * Try /api/proxy when appOrigin is set, then same-URL direct fetch, then Playwright.
@@ -41,13 +56,18 @@ export async function fetchHtmlWithRobustTransport(
     }
   }
 
+  if (!isPlaywrightHeadlessGloballyEnabled()) {
+    errors.push('Headless fallback skipped (GEO_HEADLESS_FETCH=0).');
+    throw new Error(buildAggregatedFetchFailureMessage(targetUrl, errors));
+  }
+
   try {
     console.warn('[GEO_FETCH] transport fallback: headless', { targetUrl });
     const html = await fetchHtmlViaHeadless(targetUrl);
     return { html, transport: 'headless', fetchedUrl: targetUrl };
   } catch (e) {
     errors.push(e instanceof Error ? e.message : String(e));
-    throw new Error(`Failed to fetch ${targetUrl}: ${errors.join(' | ')}`);
+    throw new Error(buildAggregatedFetchFailureMessage(targetUrl, errors));
   }
 }
 
@@ -238,13 +258,41 @@ async function fetchNaverMobileAggressive(
     if (attempt < 2) await sleep(450);
   }
 
-  try {
-    const html = await fetchHtmlViaHeadless(mobileUrl);
-    const evH = evaluateNaverMobileHtml(html);
-    if (!evH.insufficient) {
-      return { ok: true, html, naverMobileUsedHeadless: true, finalFetchedUrl: mobileUrl };
+  if (isPlaywrightHeadlessGloballyEnabled()) {
+    try {
+      const html = await fetchHtmlViaHeadless(mobileUrl);
+      const evH = evaluateNaverMobileHtml(html);
+      if (!evH.insufficient) {
+        return { ok: true, html, naverMobileUsedHeadless: true, finalFetchedUrl: mobileUrl };
+      }
+      lastErr = `headless_mobile_rejected:${evH.reason}`;
+      console.warn(
+        '[GEO_FETCH]',
+        JSON.stringify({
+          phase: 'naver_mobile',
+          normalized_url: normalizedUrl,
+          fetch_target_url: mobileUrl,
+          via: 'headless',
+          ok: false,
+          reason: lastErr,
+        })
+      );
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
+      console.warn(
+        '[GEO_FETCH]',
+        JSON.stringify({
+          phase: 'naver_mobile',
+          normalized_url: normalizedUrl,
+          fetch_target_url: mobileUrl,
+          via: 'headless',
+          ok: false,
+          error: lastErr,
+        })
+      );
     }
-    lastErr = `headless_mobile_rejected:${evH.reason}`;
+  } else {
+    lastErr = 'headless_skipped:GEO_HEADLESS_FETCH=0';
     console.warn(
       '[GEO_FETCH]',
       JSON.stringify({
@@ -254,19 +302,6 @@ async function fetchNaverMobileAggressive(
         via: 'headless',
         ok: false,
         reason: lastErr,
-      })
-    );
-  } catch (e) {
-    lastErr = e instanceof Error ? e.message : String(e);
-    console.warn(
-      '[GEO_FETCH]',
-      JSON.stringify({
-        phase: 'naver_mobile',
-        normalized_url: normalizedUrl,
-        fetch_target_url: mobileUrl,
-        via: 'headless',
-        ok: false,
-        error: lastErr,
       })
     );
   }

@@ -223,7 +223,10 @@ export function extractSupplementalTextFromJsonLd(html: string): string {
   return uniq.join('\n\n').slice(0, 15000);
 }
 
-/** When true, runAnalysis may fetch the page again via Playwright (JS-rendered DOM). */
+/**
+ * When true, runAnalysis may fetch the page again via Playwright (JS-rendered DOM).
+ * `GEO_HEADLESS_FETCH=0` disables **all** Playwright usage (see also headlessHtmlFetch).
+ */
 export function shouldAttemptHeadlessFetch(hostname: string, metrics: ExtractionMetrics): boolean {
   if (process.env.GEO_HEADLESS_FETCH === '0') return false;
   const allow = (process.env.GEO_HEADLESS_DOMAINS ?? 'rtings.com')
